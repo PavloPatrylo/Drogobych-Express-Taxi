@@ -1,0 +1,87 @@
+erDiagram
+    %% --- АКТОРИ ТА СТАТИСТИКА ---
+    USERS {
+        int id PK
+        bigint telegram_id "Nullable, Unique"
+        string phone "Unique, Index"
+        string full_name
+        string password_hash "Для веб-адмінки"
+        bool is_active
+        bool is_driver
+        bool is_admin
+        bool is_superuser
+        datetime created_at
+    }
+
+    USER_STATS {
+        int user_id PK, FK
+        int total_trips
+        int total_noshows
+        int trust_score_cached
+    }
+
+    %% --- ДОВІДНИКИ ---
+    VEHICLES {
+        int id PK
+        string plate_number "Unique"
+        string model
+        int total_seats
+        int total_standing
+        bool is_active
+    }
+
+    LOCATIONS {
+        int id PK
+        string name "UNIQUE, Index"
+    }
+
+    %% --- ПОДІЇ ТА ФІНАНСИ ---
+    TRIPS {
+        int id PK
+        int driver_id FK
+        int vehicle_id FK
+        int from_location_id FK
+        int to_location_id FK
+        datetime departure_time "Index"
+        datetime arrival_time "Estimated"
+        enum status "SCHEDULED, BOARDING, ACTIVE, COMPLETED, CLOSED, CANCELLED"
+        
+        %% Snapshots
+        int seats_limit_snapshot
+        int standing_limit_snapshot
+        decimal price_seated
+        decimal price_standing
+        }
+
+    %% --- ТРАНЗАКЦІЇ (АУДИТ) ---
+    BOOKINGS {
+        int id PK
+        int trip_id FK "Index (trip_id, status)"
+        int passenger_id FK "Nullable, Index"
+        
+        %% Audit Створення
+        int created_by_id FK "Mandatory. Хто створив запис"
+        datetime created_at
+        
+        %% Audit Посадки
+        int validated_by_id FK "Nullable. Хто підтвердив посадку"
+        datetime validated_at "Nullable. Коли сів у бус"
+        
+        enum booking_type "SEATED, STANDING, PARCEL"
+        enum source "BOT, WEB, PHONE, INSTAGRAM, DRIVER"
+        enum status "RESERVED, PAID, BOARDED, CANCELLED, NOSHOW"
+        int passengers_count
+        decimal amount_paid
+        string comment
+    }
+
+    %% ЗВ'ЯЗКИ
+    USERS ||--|| USER_STATS : "has"
+    USERS ||--o{ TRIPS : "drives"
+    VEHICLES ||--o{ TRIPS : "assigned to"
+    LOCATIONS ||--o{ TRIPS : "origin/dest"
+    TRIPS ||--o{ BOOKINGS : "contains"
+    
+    USERS ||--o{ BOOKINGS : "is passenger"
+    USERS ||--o{ BOOKINGS : "created by"
+    USERS ||--o{ BOOKINGS : "validated by (boarded)" 
