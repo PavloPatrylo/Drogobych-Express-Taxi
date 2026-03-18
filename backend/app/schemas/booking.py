@@ -19,3 +19,22 @@ class BookingRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+from typing import List
+
+# === СХЕМИ ДЛЯ ВОДІЯ (UC-D1) ===
+class PassengerInfo(BaseModel):
+    booking_id: int
+    full_name: str
+    phone: str
+    seats: int
+    status: str
+    amount_paid: float
+
+class TripManifest(BaseModel):
+    trip_id: int
+    departure_time: datetime
+    from_location: str
+    to_location: str
+    available_seats: int
+    passengers: List[PassengerInfo]
