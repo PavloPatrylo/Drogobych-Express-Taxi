@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 from app.db.database import async_session_maker
 from app.db.models import Trip, Booking, User, BookingType, BookingSource, BookingStatus, Location
-from app.schemas.booking import BookingCreate, BookingRead
+from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, StandingBookingCreate, ParcelBookingCreate
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -48,6 +48,17 @@ async def create_booking(booking_in: BookingCreate):
                 status_code=400, 
                 detail=f"На жаль, місця щойно закінчилися. Доступно: {available_seats}"
             )
+
+# Оновлена перевірка статусу
+        current_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
+        
+        # Тепер дозволяємо SCHEDULED та BOARDING
+        if current_status not in ["SCHEDULED", "BOARDING"]:
+            raise HTTPException(
+                status_code=400, 
+                detail="Бронювання неможливе: рейс вже вирушив або завершений."
+            )
+
 
         # 5. Створюємо бронювання
         new_booking = Booking(
@@ -151,3 +162,174 @@ async def cancel_booking(booking_id: int, telegram_id: int):
         await session.commit()
         
         return {"message": "Бронювання успішно скасовано"}
+    
+
+
+# === ОНОВЛЕННЯ СТАТУСУ КВИТКА (UC-D5) ===
+@router.patch("/{booking_id}/status")
+async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
+    async with async_session_maker() as session:
+        # Шукаємо конкретний квиток
+        stmt = select(Booking).where(Booking.id == booking_id)
+        booking = (await session.execute(stmt)).scalar_one_or_none()
+        
+        if not booking:
+            raise HTTPException(status_code=404, detail="Квиток не знайдено")
+
+        # Оновлюємо статус (зараз нам потрібен тільки BOARDED)
+        if payload.status == "BOARDED":
+            booking.status = BookingStatus.BOARDED
+        elif payload.status == "NOSHOW":
+            booking.status = BookingStatus.NOSHOW
+        else:
+            raise HTTPException(status_code=400, detail="Недійсний статус")
+
+        # Важливо для аудиту (вимога FR-07 з SRS): 
+        # В ідеалі тут треба ще записати validated_by_id = driver.id та validated_at = datetime.now()
+
+        await session.commit()
+        return {"message": f"Статус квитка оновлено на {payload.status}"}
+
+
+# === ШВИДКИЙ ПРОДАЖ СТОЯЧОГО МІСЦЯ (UC-D3) - БРОНЕБІЙНИЙ ВАРІАНТ ===
+# === ШВИДКИЙ ПРОДАЖ СТОЯЧОГО МІСЦЯ (UC-D3) - ОЧИЩЕНИЙ ВАРІАНТ ===
+@router.post("/standing")
+async def add_standing_passenger(payload: StandingBookingCreate):
+    async with async_session_maker() as session:
+        # 1. Знаходимо водія
+        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
+        driver = (await session.execute(user_stmt)).scalar_one_or_none()
+        
+        if not driver:
+            raise HTTPException(status_code=403, detail="Водія не знайдено")
+            
+        driver_role = driver.role.name if hasattr(driver.role, 'name') else str(driver.role)
+        if driver_role.upper() != "DRIVER":
+            raise HTTPException(status_code=403, detail="Ви не водій")
+
+        # 2. Блокуємо рейс (SELECT FOR UPDATE)
+        trip_stmt = select(Trip).where(Trip.id == payload.trip_id).with_for_update()
+        trip = (await session.execute(trip_stmt)).scalar_one_or_none()
+        
+        if not trip:
+            raise HTTPException(status_code=404, detail="Рейс не знайдено")
+        if trip.driver_id != driver.id:
+            raise HTTPException(status_code=403, detail="Це не ваш рейс")
+
+        # 3. Перевіряємо статус рейсу
+        current_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
+        if current_status not in ["BOARDING", "ACTIVE"]:
+            raise HTTPException(status_code=400, detail="Додавати стоячих можна лише під час посадки або в дорозі")
+
+        # 4. Перевіряємо ліміт стоячих місць
+        standing_type = BookingType.STANDING if hasattr(BookingType, 'STANDING') else "STANDING"
+        
+        result = await session.execute(
+            select(func.sum(Booking.passengers_count))
+            .where(Booking.trip_id == trip.id)
+            .where(Booking.booking_type == standing_type)
+            .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+        )
+        booked_standing = result.scalar() or 0
+        
+        standing_limit = getattr(trip, 'standing_limit_snapshot', 10)
+        
+        if booked_standing >= standing_limit:
+            raise HTTPException(status_code=400, detail="Ліміт стоячих вичерпано")
+
+        # 5. Створюємо запис
+        price = getattr(trip, 'price_standing', getattr(trip, 'price_seated', 0))
+        source_val = BookingSource.DRIVER if hasattr(BookingSource, 'DRIVER') else "DRIVER"
+
+        new_booking = Booking(
+            trip_id=trip.id,
+            passenger_id=None,
+            created_by_id=driver.id,
+            validated_by_id=driver.id,
+            validated_at=datetime.now(timezone.utc),
+            booking_type=standing_type,
+            source=source_val,
+            status=BookingStatus.BOARDED,
+            passengers_count=1,
+            amount_paid=price 
+        )
+        
+        session.add(new_booking)
+        await session.commit()
+        
+        return {"message": "Стоячий пасажир додано"}
+    
+# === ДОДАВАННЯ ПОСИЛКИ (UC-D4) ===
+@router.post("/parcel")
+async def add_parcel(payload: ParcelBookingCreate):
+    async with async_session_maker() as session:
+        # 1. Знаходимо водія
+        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
+        driver = (await session.execute(user_stmt)).scalar_one_or_none()
+        
+        if not driver:
+            raise HTTPException(status_code=403, detail="Водія не знайдено")
+
+        # 2. Перевіряємо рейс
+        trip_stmt = select(Trip).where(Trip.id == payload.trip_id)
+        trip = (await session.execute(trip_stmt)).scalar_one_or_none()
+        
+        if not trip:
+            raise HTTPException(status_code=404, detail="Рейс не знайдено")
+        if trip.driver_id != driver.id:
+            raise HTTPException(status_code=403, detail="Це не ваш рейс")
+
+        # 3. Створюємо запис посилки
+        parcel_type = BookingType.PARCEL if hasattr(BookingType, 'PARCEL') else "PARCEL"
+        source_val = BookingSource.DRIVER if hasattr(BookingSource, 'DRIVER') else "DRIVER"
+
+        new_booking = Booking(
+            trip_id=trip.id,
+            passenger_id=None,
+            created_by_id=driver.id,
+            validated_by_id=driver.id,
+            validated_at=datetime.now(timezone.utc),
+            booking_type=parcel_type,
+            source=source_val,
+            status=BookingStatus.BOARDED,  # Посилка відразу вважається прийнятою
+            passengers_count=1,            # 1 посилка = 1 одиниця
+            amount_paid=payload.price,
+            comment=payload.description    # Якщо в БД є поле comment. Якщо ні - просто видали цей рядок
+        )
+        
+        session.add(new_booking)
+        await session.commit()
+        
+        return {"message": "Посилку додано"}
+    
+# === СКАСУВАННЯ ШВИДКОГО ПРОДАЖУ (UC-D7) ===
+@router.delete("/{booking_id}/quick-sale")
+async def cancel_quick_sale(booking_id: int, telegram_id: int):
+    async with async_session_maker() as session:
+        # Перевіряємо водія
+        user_stmt = select(User).where(User.telegram_id == telegram_id)
+        driver = (await session.execute(user_stmt)).scalar_one_or_none()
+        if not driver:
+            raise HTTPException(status_code=403, detail="Доступ заборонено")
+
+        # Знаходимо бронювання
+        stmt = select(Booking, Trip).join(Trip, Booking.trip_id == Trip.id).where(Booking.id == booking_id)
+        result = (await session.execute(stmt)).first()
+        if not result:
+            raise HTTPException(status_code=404, detail="Запис не знайдено")
+            
+        booking, trip = result
+
+        # Перевіряємо, чи це рейс цього водія і чи це швидкий продаж
+        if trip.driver_id != driver.id:
+            raise HTTPException(status_code=403, detail="Це не ваш рейс")
+            
+        booking_type_str = booking.booking_type.name if hasattr(booking.booking_type, 'name') else str(booking.booking_type)
+        if booking_type_str not in ["STANDING", "PARCEL"]:
+            raise HTTPException(status_code=400, detail="Можна скасовувати лише стоячих та посилки")
+
+        # Видаляємо запис повністю (або ставимо статус CANCELLED)
+        await session.delete(booking)
+        await session.commit()
+        
+        return {"message": "Запис успішно видалено"}

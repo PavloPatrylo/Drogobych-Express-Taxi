@@ -30,6 +30,7 @@ class PassengerInfo(BaseModel):
     seats: int
     status: str
     amount_paid: float
+    booking_type: str  # ДОДАНО: SEATED, STANDING або PARCEL
 
 class TripManifest(BaseModel):
     trip_id: int
@@ -37,4 +38,23 @@ class TripManifest(BaseModel):
     from_location: str
     to_location: str
     available_seats: int
+    trip_status: str   # ДОДАНО: SCHEDULED, BOARDING, ACTIVE
     passengers: List[PassengerInfo]
+
+class TripStatusUpdate(BaseModel):
+    status: str
+
+# Якщо цієї схеми ще немає у файлі, додай її:
+class BookingStatusUpdate(BaseModel):
+    status: str
+
+class StandingBookingCreate(BaseModel):
+    trip_id: int
+    telegram_id: int
+
+
+class ParcelBookingCreate(BaseModel):
+    trip_id: int
+    telegram_id: int
+    description: str = "Посилка"
+    price: float = 0.0
