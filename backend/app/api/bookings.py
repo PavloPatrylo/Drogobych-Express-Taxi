@@ -60,24 +60,25 @@ async def create_booking(booking_in: BookingCreate):
             )
 
 
-        # 5. Створюємо бронювання
-        new_booking = Booking(
-            trip_id=trip.id,
-            passenger_id=user.id,
-            created_by_id=user.id, # Пасажир сам створив запис
-            booking_type=BookingType.SEATED,
-            source=BookingSource.BOT,
-            status=BookingStatus.RESERVED,
-            passengers_count=booking_in.requested_seats,
-            amount_paid=trip.price_seated * booking_in.requested_seats
-        )
+
+        # 5. Створюємо окремі бронювання для кожного місця (Згідно з логікою 1 квиток = 1 місце)
+        for _ in range(booking_in.requested_seats):
+            new_booking = Booking(
+                trip_id=trip.id,
+                passenger_id=user.id,
+                created_by_id=user.id, # Пасажир сам створив запис
+                booking_type=BookingType.SEATED,
+                source=BookingSource.BOT,
+                status=BookingStatus.RESERVED,
+                passengers_count=1,            # 👈 ЗАВЖДИ 1 місце на один квиток
+                amount_paid=trip.price_seated  # 👈 Ціна вказується за 1 місце
+            )
+            session.add(new_booking)
         
-        session.add(new_booking)
-        
-        # 6. Зберігаємо зміни
+        # 6. Зберігаємо всі квитки разом (транзакція)
         try:
             await session.commit()
-            return {"message": "Бронювання успішне!", "booking_id": new_booking.id}
+            return {"message": f"Успішно заброньовано {booking_in.requested_seats} місць!"}
         except IntegrityError:
             await session.rollback()
             raise HTTPException(status_code=500, detail="Помилка бази даних при бронюванні")
@@ -176,16 +177,15 @@ async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
         if not booking:
             raise HTTPException(status_code=404, detail="Квиток не знайдено")
 
-        # Оновлюємо статус (зараз нам потрібен тільки BOARDED)
+        # Оновлюємо статус (Додано RESERVED для скасування випадкової посадки)
         if payload.status == "BOARDED":
             booking.status = BookingStatus.BOARDED
         elif payload.status == "NOSHOW":
             booking.status = BookingStatus.NOSHOW
+        elif payload.status == "RESERVED":
+            booking.status = BookingStatus.RESERVED
         else:
             raise HTTPException(status_code=400, detail="Недійсний статус")
-
-        # Важливо для аудиту (вимога FR-07 з SRS): 
-        # В ідеалі тут треба ще записати validated_by_id = driver.id та validated_at = datetime.now()
 
         await session.commit()
         return {"message": f"Статус квитка оновлено на {payload.status}"}
@@ -333,3 +333,123 @@ async def cancel_quick_sale(booking_id: int, telegram_id: int):
         await session.commit()
         
         return {"message": "Запис успішно видалено"}
+    
+
+# === ШВИДКИЙ ПРОДАЖ СИДЯЧОГО МІСЦЯ (ОФЛАЙН) ===
+@router.post("/seated")
+async def add_seated_passenger(payload: StandingBookingCreate):
+    async with async_session_maker() as session:
+        # 1. Знаходимо водія
+        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
+        driver = (await session.execute(user_stmt)).scalar_one_or_none()
+        if not driver or driver.role.name.upper() != "DRIVER":
+            raise HTTPException(status_code=403, detail="Ви не водій")
+
+        # 2. Блокуємо рейс
+        trip_stmt = select(Trip).where(Trip.id == payload.trip_id).with_for_update()
+        trip = (await session.execute(trip_stmt)).scalar_one_or_none()
+        if not trip or trip.driver_id != driver.id:
+            raise HTTPException(status_code=403, detail="Це не ваш рейс")
+
+        # 3. Перевіряємо статус
+        current_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
+        if current_status not in ["BOARDING", "ACTIVE"]:
+            raise HTTPException(status_code=400, detail="Додавати пасажирів можна лише під час посадки або в дорозі")
+
+        # 4. Перевіряємо, чи Є вільні сидячі місця
+        seated_type = BookingType.SEATED if hasattr(BookingType, 'SEATED') else "SEATED"
+        result = await session.execute(
+            select(func.sum(Booking.passengers_count))
+            .where(Booking.trip_id == trip.id)
+            .where(Booking.booking_type == seated_type)
+            .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+        )
+        booked_seated = result.scalar() or 0
+        available_seats = getattr(trip, 'seats_limit_snapshot', 0) - booked_seated
+        
+        if available_seats <= 0:
+            raise HTTPException(status_code=400, detail="Вільних сидячих місць більше немає")
+
+        # 5. Створюємо запис
+        price = getattr(trip, 'price_seated', 0)
+        source_val = BookingSource.DRIVER if hasattr(BookingSource, 'DRIVER') else "DRIVER"
+
+        new_booking = Booking(
+            trip_id=trip.id,
+            passenger_id=None,
+            created_by_id=driver.id,
+            validated_by_id=driver.id,
+            validated_at=datetime.now(timezone.utc),
+            booking_type=seated_type,
+            source=source_val,
+            status=BookingStatus.BOARDED,
+            passengers_count=1,
+            amount_paid=price 
+        )
+        
+        session.add(new_booking)
+        await session.commit()
+        return {"message": "Сидячого пасажира додано"}
+
+
+# === ШВИДКИЙ ПРОДАЖ СТОЯЧОГО МІСЦЯ ===
+@router.post("/standing")
+async def add_standing_passenger(payload: StandingBookingCreate):
+    async with async_session_maker() as session:
+        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
+        driver = (await session.execute(user_stmt)).scalar_one_or_none()
+        if not driver or driver.role.name.upper() != "DRIVER":
+            raise HTTPException(status_code=403, detail="Ви не водій")
+
+        trip_stmt = select(Trip).where(Trip.id == payload.trip_id).with_for_update()
+        trip = (await session.execute(trip_stmt)).scalar_one_or_none()
+        if not trip or trip.driver_id != driver.id:
+            raise HTTPException(status_code=403, detail="Це не ваш рейс")
+
+        current_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
+        if current_status not in ["BOARDING", "ACTIVE"]:
+            raise HTTPException(status_code=400, detail="Додавати стоячих можна лише під час посадки або в дорозі")
+
+        # НОВА БІЗНЕС-ЛОГІКА: Перевіряємо, чи закінчилися сидячі місця
+        seated_type = BookingType.SEATED if hasattr(BookingType, 'SEATED') else "SEATED"
+        seated_result = await session.execute(
+            select(func.sum(Booking.passengers_count))
+            .where(Booking.trip_id == trip.id)
+            .where(Booking.booking_type == seated_type)
+            .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+        )
+        booked_seated = seated_result.scalar() or 0
+        if (trip.seats_limit_snapshot - booked_seated) > 0:
+            raise HTTPException(status_code=400, detail="Не можна додати стоячого, поки є вільні сидячі місця!")
+
+        # Перевіряємо ліміт стоячих місць
+        standing_type = BookingType.STANDING if hasattr(BookingType, 'STANDING') else "STANDING"
+        standing_result = await session.execute(
+            select(func.sum(Booking.passengers_count))
+            .where(Booking.trip_id == trip.id)
+            .where(Booking.booking_type == standing_type)
+            .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+        )
+        booked_standing = standing_result.scalar() or 0
+        if booked_standing >= trip.standing_limit_snapshot:
+            raise HTTPException(status_code=400, detail="Ліміт стоячих вичерпано")
+
+        price = getattr(trip, 'price_standing', getattr(trip, 'price_seated', 0))
+        source_val = BookingSource.DRIVER if hasattr(BookingSource, 'DRIVER') else "DRIVER"
+
+        new_booking = Booking(
+            trip_id=trip.id,
+            passenger_id=None,
+            created_by_id=driver.id,
+            validated_by_id=driver.id,
+            validated_at=datetime.now(timezone.utc),
+            booking_type=standing_type,
+            source=source_val,
+            status=BookingStatus.BOARDED,
+            passengers_count=1,
+            amount_paid=price 
+        )
+        
+        session.add(new_booking)
+        await session.commit()
+        return {"message": "Стоячий пасажир додано"}

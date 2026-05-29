@@ -122,6 +122,8 @@ class Trip(Base):
     from_location: Mapped["Location"] = relationship("Location", foreign_keys=[from_location_id])
     to_location: Mapped["Location"] = relationship("Location", foreign_keys=[to_location_id])
 
+    vehicle: Mapped["Vehicle"] = relationship("Vehicle")
+
     __table_args__ = (
         Index("ix_trips_search", "from_location_id", "to_location_id", "departure_time"),
     )

@@ -20,6 +20,8 @@ class TripReadPassenger(BaseModel):
     # Цього поля немає в базі, ми його обчислюємо на льоту (seats_available)
     available_seats: int 
     status: str
+    vehicle_plate: str | None = None
+    vehicle_model: str | None = None
 
     class Config:
         from_attributes = True

@@ -64,7 +64,11 @@ async def search_trips(
             .where(Trip.departure_time >= start_of_day)
             .where(Trip.departure_time <= end_of_day)
             .where(Trip.status.in_([TripStatus.SCHEDULED, TripStatus.BOARDING]))
-            .options(selectinload(Trip.from_location), selectinload(Trip.to_location))
+            .options(
+                selectinload(Trip.from_location), 
+                selectinload(Trip.to_location),
+                selectinload(Trip.vehicle) # 👈 ДОДАЛИ ЦЕЙ РЯДОК
+            )
             .order_by(Trip.departure_time)
         )
         
@@ -96,8 +100,11 @@ async def search_trips(
                 departure_time=trip.departure_time,
                 price_seated=trip.price_seated,
                 available_seats=available,
-                status=trip.status.value
-            )
+                status=trip.status.value,
+
+                vehicle_plate=trip.vehicle.plate_number if trip.vehicle else "Не вказано",
+                vehicle_model=trip.vehicle.model if trip.vehicle else "Автобус"
+            );
             response_trips.append(trip_data)
 
         return response_trips
@@ -181,15 +188,15 @@ async def get_driver_manifest(telegram_id: int):
 
         return manifests
     
-# === ЗМІНА СТАТУСУ РЕЙСУ (UC-D2) ===
+# === ЗМІНА СТАТУСУ РЕЙСУ (UC-D2 та Скасування Диспетчером) ===
 @router.patch("/{trip_id}/status")
 async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatusUpdate):
     async with async_session_maker() as session:
-        # 1. Знаходимо водія
+        # 1. Знаходимо користувача, який робить запит (Водій або Диспетчер)
         user_stmt = select(User).where(User.telegram_id == telegram_id)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
+        actor = (await session.execute(user_stmt)).scalar_one_or_none()
         
-        if not driver:
+        if not actor:
             raise HTTPException(status_code=403, detail="Доступ заборонено")
 
         # 2. Знаходимо рейс
@@ -198,48 +205,54 @@ async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatus
         
         if not trip:
             raise HTTPException(status_code=404, detail="Рейс не знайдено")
-            
-        if trip.driver_id != driver.id:
-            raise HTTPException(status_code=403, detail="Це не ваш рейс")
 
-        # 3. Перевірка допустимих переходів (Strict State Machine згідно UC-D2)
-        # Ключ - поточний статус, Значення - єдиний можливий наступний статус
-        valid_transitions = {
-            'SCHEDULED': 'BOARDING',
-            'BOARDING': 'ACTIVE',
-            'ACTIVE': 'COMPLETED'
-        }
-
-        # Якщо статус у БД зберігається як Enum, беремо його ім'я
         current_status = trip.status.name if hasattr(trip.status, 'name') else trip.status
         requested_status = payload.status
 
-        # Альтернативний сценарій A2.1: Неприпустимий перехід
-        if current_status not in valid_transitions or valid_transitions[current_status] != requested_status:
-            raise HTTPException(status_code=400, detail="Ця дія недоступна")
-
-        # 4. Оновлюємо статус рейсу
-        # Якщо в тебе TripStatus - це Enum:
-        trip.status = TripStatus[requested_status] 
-
-        # 5. АВТОМАТИЧНИЙ NO-SHOW (Реалізація вимоги UC-D5.3)
-        # Якщо рейс вирушив в дорогу (ACTIVE), всі хто не з'явився - отримують NOSHOW
-        if requested_status == 'ACTIVE':
+        # 3. ЛОГІКА ДИСПЕТЧЕРА: Скасування рейсу
+        if requested_status == 'CANCELLED':
+            if actor.role != UserRole.DISPATCHER:
+                raise HTTPException(status_code=403, detail="Тільки диспетчер має право скасовувати рейс")
+            
+            trip.status = TripStatus.CANCELLED
+            
+            # Автоматично скасовуємо всі заброньовані/оплачені квитки на цей рейс
             bookings_stmt = select(Booking).where(
                 Booking.trip_id == trip.id,
                 Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID])
             )
-            bookings_to_noshow = (await session.execute(bookings_stmt)).scalars().all()
-            
-            for b in bookings_to_noshow:
-                b.status = BookingStatus.NOSHOW
-                # Примітка: тут в ідеалі ще треба робити +1 до UserStats.total_noshows пасажира
-                # згідно з вимогою FR-11, але це можна додати пізніше, щоб не ускладнювати
+            bookings_to_cancel = (await session.execute(bookings_stmt)).scalars().all()
+            for b in bookings_to_cancel:
+                b.status = BookingStatus.CANCELLED
+                
+        # 4. ЛОГІКА ВОДІЯ: Звичайний рух рейсу
+        else:
+            if actor.role != UserRole.DRIVER or trip.driver_id != actor.id:
+                raise HTTPException(status_code=403, detail="Це не ваш рейс або ви не водій")
+
+            valid_transitions = {
+                'SCHEDULED': 'BOARDING',
+                'BOARDING': 'ACTIVE',
+                'ACTIVE': 'COMPLETED'
+            }
+
+            if current_status not in valid_transitions or valid_transitions[current_status] != requested_status:
+                raise HTTPException(status_code=400, detail="Ця дія недоступна")
+
+            trip.status = TripStatus[requested_status] 
+
+            # АВТОМАТИЧНИЙ NO-SHOW (якщо рейс рушив, а пасажир не сів)
+            if requested_status == 'ACTIVE':
+                bookings_stmt = select(Booking).where(
+                    Booking.trip_id == trip.id,
+                    Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID])
+                )
+                bookings_to_noshow = (await session.execute(bookings_stmt)).scalars().all()
+                for b in bookings_to_noshow:
+                    b.status = BookingStatus.NOSHOW
 
         await session.commit()
         return {"message": f"Статус рейсу змінено на {requested_status}"}
-    
-
 
 # === ФІНАНСОВИЙ ЗВІТ ВОДІЯ ЗА ДЕНЬ (КИЇВСЬКИЙ ЧАС) ===
 @router.get("/driver/{telegram_id}/summary")

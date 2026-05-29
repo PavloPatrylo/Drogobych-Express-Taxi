@@ -67,18 +67,22 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await state.set_state(AuthStates.waiting_for_phone)
             await message.answer(
                 "Вітаємо в Drogobych Express Taxi! 🚕\n\n"
-                "Натисніть кнопку нижче або просто напишіть свій номер телефону (наприклад, +380991234567):",
+                "Натисніть кнопку нижче, щоб поділитися своїм номером телефону для реєстрації:",
                 reply_markup=get_registration_kb()
             )
 
-# --- 3. Обробка номеру телефону (Контакт АБО Текст) ---
-@dp.message(AuthStates.waiting_for_phone, F.contact | F.text)
+# --- 3. Обробка номеру телефону (ТІЛЬКИ КОНТАКТ) ---
+@dp.message(AuthStates.waiting_for_phone, F.contact)
 async def process_phone(message: types.Message, state: FSMContext):
-    # Отримуємо номер з контакту або з тексту
-    if message.contact:
-        raw_phone = message.contact.phone_number
-    else:
-        raw_phone = message.text
+    # БЕЗПЕКА: Перевіряємо, чи це дійсно номер користувача (а не чужий контакт)
+    if message.contact.user_id != message.from_user.id:
+        await message.answer(
+            "❌ З метою безпеки, будь ласка, надішліть САМЕ ВАШ контакт, використовуючи кнопку внизу.",
+            reply_markup=get_registration_kb()
+        )
+        return
+
+    raw_phone = message.contact.phone_number
 
     # Очищаємо номер від пробілів та дужок
     phone = re.sub(r'[^\d+]', '', raw_phone)
@@ -86,7 +90,6 @@ async def process_phone(message: types.Message, state: FSMContext):
         phone = '+' + phone
 
     async with async_session_maker() as session:
-        # Шукаємо в базі, чи є вже такий номер (може, диспетчер вже створив водія)
         stmt = select(User).where(User.phone == phone)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
@@ -99,7 +102,7 @@ async def process_phone(message: types.Message, state: FSMContext):
                 await message.answer(
                     "🚖 Система розпізнала вас як Водія.\n"
                     "Будь ласка, введіть ваш пароль для доступу:",
-                    reply_markup=ReplyKeyboardRemove()
+                    reply_markup=ReplyKeyboardRemove() # Прибираємо кнопку контакту
                 )
                 return
             else:
@@ -121,9 +124,24 @@ async def process_phone(message: types.Message, state: FSMContext):
 
     # Завершуємо реєстрацію для пасажира
     await state.clear()
+    
+    # UX ПРАВКА: Спочатку надсилаємо повідомлення, яке ПРИХОВАЄ клавіатуру контакту
+    await message.answer("✅ Номер успішно підтверджено!", reply_markup=ReplyKeyboardRemove())
+    
+    # Потім надсилаємо меню з WebApp
     await message.answer(
-        "✅ Реєстрацію успішно завершено!",
+        "Реєстрацію завершено! Тепер ви можете бронювати квитки 👇",
         reply_markup=get_main_menu_kb()
+    )
+
+# --- 3.1. Захист від хитрощів (Якщо користувач ввів текст замість натискання кнопки) ---
+@dp.message(AuthStates.waiting_for_phone)
+async def process_phone_invalid(message: types.Message):
+    # Тільки сваримо і нагадуємо про кнопку. Стан НЕ очищаємо!
+    await message.answer(
+        "❌ Будь ласка, використовуйте спеціальну кнопку «📱 Поділитися номером» внизу екрану.\n"
+        "(Якщо кнопки немає, натисніть на іконку з 4 квадратиками біля поля вводу тексту).",
+        reply_markup=get_registration_kb()
     )
 
 # --- 4. Обробка пароля для ВОДІЯ ---
@@ -153,10 +171,19 @@ async def process_password(message: types.Message, state: FSMContext):
         else:
             await message.answer("❌ Невірний пароль. Спробуйте ще раз:")
 
-async def main():
-    logging.info("🚀 Бот з FSM Авторизацією запущений")
-    await dp.start_polling(bot)
+from aiogram.types import MenuButtonWebApp, WebAppInfo
 
+async def main():
+    # Встановлюємо кнопку меню, яка завжди висітиме зліва від поля вводу
+    await bot.set_chat_menu_button(
+        menu_button=MenuButtonWebApp(
+            text="🚕 Відкрити таксі",
+            web_app=WebAppInfo(url=WEB_APP_URL)
+        )
+    )
+    logging.info("🚀 Бот запущений")
+    await dp.start_polling(bot)
+    
 if __name__ == "__main__":
     try:
         asyncio.run(main())

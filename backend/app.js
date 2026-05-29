@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let telegramId = tg.initDataUnsafe?.user?.id || 1685900931;
     let fallbackName = tg.initDataUnsafe?.user?.first_name || "Користувач";
 
-    const API_URL = 'https://1cd41bb9cabd1c.lhr.life/api';
+    const API_URL = 'https://da78ae539bebd0.lhr.life/api';
 
     const expandedTrips = new Set();
 
@@ -93,6 +93,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+
+
+    
     // 1. Профіль + маршрутизація за роллю
     async function fetchUserData() {
         try {
@@ -184,7 +187,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         actionButton = `<div class="w-full bg-gray-200 text-gray-500 font-bold py-2 rounded-xl mt-3 text-center">Місць немає</div>`;
                     }
                 } else {
-                    actionButton = `<button class="w-full bg-black text-white font-bold py-2 rounded-xl mt-3 hover:bg-gray-800" onclick="window.bookTrip(${trip.id})">Забронювати за ${trip.price_seated} грн</button>`;
+                    actionButton = `<button class="w-full bg-black text-white font-bold py-2 rounded-xl mt-3 hover:bg-gray-800" onclick="window.bookTrip(${trip.id}, ${trip.available_seats}, ${trip.price_seated})">Забронювати за ${trip.price_seated} грн</button>`;
                 }
             // ---------------------
 
@@ -197,32 +200,117 @@ document.addEventListener('DOMContentLoaded', () => {
                                 ${hasSeats ? `Вільних місць: ${trip.available_seats}` : 'ПРОДАНО'}
                             </span>
                         </div>
+                        
                         <p class="mt-1 font-medium text-gray-600">${trip.from_location.name} → ${trip.to_location.name}</p>
+                        
+                        <p class="text-xs text-gray-500 font-bold mt-2 mb-3">
+                            🚌 ${trip.vehicle_model} • 
+                            <span class="bg-gray-100 border border-gray-300 px-1.5 py-0.5 rounded text-gray-800 tracking-wider uppercase">${trip.vehicle_plate}</span>
+                        </p>
+                        
                         ${actionButton}
                     </div>`;
             });
         } catch (error) { console.error(error); } finally { searchBtn.textContent = 'Знайти рейс'; searchBtn.disabled = false; }
     });
 
-    // 4. Бронювання (пасажир)
-    window.bookTrip = async function(tripId) {
-        if (!confirm('Ви впевнені, що хочете забронювати це місце?')) return;
-        try {
-            const response = await fetch(`${API_URL}/bookings/`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
-                body: JSON.stringify({ trip_id: tripId, telegram_id: telegramId, requested_seats: 1 })
-            });
+// === ЛОГІКА МОДАЛКИ БРОНЮВАННЯ ===
+    const bookingModal = document.getElementById('bookingModal');
+    const closeBookingBtn = document.getElementById('closeBookingBtn');
+    const confirmBookingBtn = document.getElementById('confirmBookingBtn');
+    const btnMinus = document.getElementById('btn-minus');
+    const btnPlus = document.getElementById('btn-plus');
+    const seatsCounter = document.getElementById('seats-counter');
+    const totalPriceEl = document.getElementById('total-price');
 
-            if (response.ok) {
-                alert(`✅ Бронювання успішне!`);
-                searchBtn.click(); 
-            } else {
-                const errorData = await response.json();
-                alert(`❌ Помилка: ${errorData.detail}`);
-            }
-        } catch (error) { alert('❌ Помилка з\'єднання з сервером.'); }
+    let currentTripId = null;
+    let selectedSeats = 1;
+    let maxAvailableSeats = 1;
+    let pricePerSeat = 0;
+
+    // 4. Функція, яка викликається кнопкою на самому рейсі
+    window.bookTrip = function(tripId, availableSeats, price) {
+        currentTripId = tripId;
+        maxAvailableSeats = availableSeats;
+        pricePerSeat = price;
+        selectedSeats = 1; // Завжди скидаємо на 1 при відкритті
+
+        updateBookingUI();
+        
+        // Відкриваємо модалку
+        bookingModal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
     };
+
+    // Оновлення лічильника і ціни
+    function updateBookingUI() {
+        seatsCounter.textContent = selectedSeats;
+        totalPriceEl.textContent = `${selectedSeats * pricePerSeat} грн`;
+        
+        // Блокуємо кнопки, якщо досягли лімітів
+        btnMinus.disabled = selectedSeats <= 1;
+        btnPlus.disabled = selectedSeats >= maxAvailableSeats;
+    }
+
+    if (bookingModal) {
+        // Кнопки + та -
+        btnMinus.addEventListener('click', () => {
+            if (selectedSeats > 1) {
+                selectedSeats--;
+                updateBookingUI();
+            }
+        });
+
+        btnPlus.addEventListener('click', () => {
+            if (selectedSeats < maxAvailableSeats) {
+                selectedSeats++;
+                updateBookingUI();
+            }
+        });
+
+        // Закриття модалки
+        const closeBookingModal = () => {
+            bookingModal.classList.add('hidden');
+            document.body.style.overflow = '';
+        };
+
+        closeBookingBtn.addEventListener('click', closeBookingModal);
+        window.addEventListener('click', (e) => {
+            if (e.target === bookingModal) closeBookingModal();
+        });
+
+        // Кнопка ПІДТВЕРДИТИ
+        confirmBookingBtn.addEventListener('click', async () => {
+            confirmBookingBtn.textContent = 'Обробка...';
+            confirmBookingBtn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_URL}/bookings/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+                    body: JSON.stringify({ 
+                        trip_id: currentTripId, 
+                        telegram_id: telegramId, 
+                        requested_seats: selectedSeats // 👈 Відправляємо кількість місць!
+                    })
+                });
+
+                if (response.ok) {
+                    alert(`✅ Бронювання успішне!`);
+                    closeBookingModal();
+                    searchBtn.click(); // Оновлюємо пошук
+                } else {
+                    const errorData = await response.json();
+                    alert(`❌ Помилка: ${errorData.detail}`);
+                }
+            } catch (error) { 
+                alert('❌ Помилка з\'єднання з сервером.'); 
+            } finally {
+                confirmBookingBtn.textContent = 'Підтвердити';
+                confirmBookingBtn.disabled = false;
+            }
+        });
+    }
 
     // 5. Список квитків (пасажир)
     async function fetchMyTickets() {
@@ -355,7 +443,8 @@ async function fetchDriverManifest() {
                         if (p.status === 'RESERVED' || p.status === 'PAID') {
                             actionButton = `<button class="w-full mt-2 bg-green-500 hover:bg-green-600 text-white font-bold py-2 rounded-lg text-sm transition-colors" onclick="confirmBoarding(${p.booking_id})">✓ Підтвердити посадку</button>`;
                         } else if (p.status === 'BOARDED') {
-                            actionButton = `<div class="w-full mt-2 bg-green-50 text-green-700 border border-green-200 font-bold py-2 rounded-lg text-sm text-center">✓ На борту</div>`;
+                            // Тепер це активна кнопка, яка дозволяє скасувати посадку
+                            actionButton = `<button class="w-full mt-2 bg-green-50 hover:bg-red-50 text-green-700 hover:text-red-600 border border-green-200 hover:border-red-200 font-bold py-2 rounded-lg text-sm text-center transition-colors" onclick="undoBoarding(${p.booking_id})">✓ На борту (Натисніть для відміни)</button>`;
                         } else if (p.status === 'NOSHOW') {
                             actionButton = `<div class="w-full mt-2 bg-red-50 text-red-500 font-bold py-2 rounded-lg text-sm text-center">❌ Неявка</div>`;
                         }
@@ -438,10 +527,25 @@ async function fetchDriverManifest() {
 
 // ПЕРЕВІР, ЧИ Є ТУТ onclick:
                 let quickActionsHtml = `
-                    <div class="flex gap-2 mt-4">
-                        <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors" onclick="addStandingPassenger(${manifest.trip_id})">🧍 + Стоячий</button>
-                        <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors" onclick="addParcel(${manifest.trip_id})">📦 Посилка</button>                    </div>
-                    ${mainActionBtn}
+                    <div class="mt-4">
+                        <button class="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 rounded-xl text-sm transition-colors mb-2 disabled:opacity-40 disabled:cursor-not-allowed" 
+                            onclick="addSeatedPassenger(${manifest.trip_id})" ${manifest.available_seats === 0 ? 'disabled' : ''}>
+                            💺 + Сидячий пасажир
+                        </button>
+                        <div class="flex gap-2">
+                            <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed" 
+                                onclick="addStandingPassenger(${manifest.trip_id})" ${manifest.available_seats > 0 ? 'disabled' : ''}>
+                                🧍 + Стоячий
+                            </button>
+                            <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors" 
+                                onclick="addParcel(${manifest.trip_id})">
+                                📦 Посилка
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        ${mainActionBtn}
+                    </div>
                 `;
 
                 const statsHtml = `
@@ -494,8 +598,9 @@ async function fetchDriverManifest() {
     }
 
     // === ПІДТВЕРДЖЕННЯ ПОСАДКИ (UC-D5) ===
+// === ПІДТВЕРДЖЕННЯ ПОСАДКИ (UC-D5) ===
     window.confirmBoarding = async function(bookingId) {
-        if (!confirm('Підтвердити посадку цього пасажира?')) return;
+        // ❌ Рядок із confirm видалено
         try {
             const response = await fetch(`${API_URL}/bookings/${bookingId}/status`, {
                 method: 'PATCH',
@@ -687,6 +792,77 @@ async function fetchDriverManifest() {
             container.innerHTML = '<div class="text-center text-red-500 py-4">Помилка завантаження звіту</div>';
         }
     }
+
+        // --- ЛОГІКА МОДАЛЬНОГО ВІКНА "ІНФО" ---
+    const infoBtn = document.getElementById('infoBtn');
+    const infoModal = document.getElementById('infoModal');
+    const closeInfoBtn = document.getElementById('closeInfoBtn');
+    const understandBtn = document.getElementById('understandBtn');
+
+    if (infoBtn && infoModal) {
+        // Відкрити
+        infoBtn.addEventListener('click', () => {
+            infoModal.classList.remove('hidden');
+            document.body.style.overflow = 'hidden'; // Блокуємо скрол фону
+        });
+
+        // Закрити
+        const closeInfo = () => {
+            infoModal.classList.add('hidden');
+            document.body.style.overflow = ''; // Повертаємо скрол
+        };
+
+        closeInfoBtn.addEventListener('click', closeInfo);
+        understandBtn.addEventListener('click', closeInfo);
+
+        // Закрити при кліку на темний фон
+        window.addEventListener('click', (e) => {
+            if (e.target === infoModal) {
+                closeInfo();
+            }
+        });
+    }
+
+    // === ДОДАВАННЯ СИДЯЧОГО ПАСАЖИРА ===
+    window.addSeatedPassenger = async function(tripId) {
+        try {
+            const response = await fetch(`${API_URL}/bookings/seated`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'ngrok-skip-browser-warning': 'true' 
+                },
+                body: JSON.stringify({ trip_id: tripId, telegram_id: telegramId })
+            });
+
+            if (response.ok) {
+                fetchDriverManifest(); // Оновлюємо маніфест
+            } else {
+                const errorData = await response.json();
+                alert(`❌ ${errorData.detail}`);
+            }
+        } catch (error) {
+            console.error(error);
+            alert('❌ Помилка з\'єднання з сервером');
+        }
+    };
+    // === ВІДМІНА ПОСАДКИ (ВИПАДКОВИЙ КЛІК) ===
+// === ВІДМІНА ПОСАДКИ (ВИПАДКОВИЙ КЛІК) ===
+    window.undoBoarding = async function(bookingId) {
+        // ❌ Рядок із confirm видалено
+        try {
+            const response = await fetch(`${API_URL}/bookings/${bookingId}/status`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+                body: JSON.stringify({ status: 'RESERVED' })
+            });
+            if (response.ok) fetchDriverManifest();
+            else {
+                const err = await response.json();
+                alert(`❌ Помилка: ${err.detail}`);
+            }
+        } catch (error) { alert('❌ Помилка сервера'); }
+    };
     // --- СТАРТ ---
     fetchUserData();
 });
