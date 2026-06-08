@@ -443,20 +443,24 @@
 
       <div id="wizard-step-single" style="display:none;">
         <div class="form-row">
-          <div class="form-group"><label class="form-label">Маршрут</label><select class="form-select" id="sw-route"><option value="drohobych-lviv">Дрогобич → Львів</option><option value="lviv-drohobych">Львів → Дрогобич</option></select></div>
+          <div class="form-group"><label class="form-label">Відправлення з</label><select class="form-select" id="sw-from"></select></div>
+          <div class="form-group"><label class="form-label">Прибуття до</label><select class="form-select" id="sw-to"></select></div>
+        </div>
+        <div class="form-row">
           <div class="form-group"><label class="form-label">Дата відправлення</label><input type="date" class="form-input" id="sw-date"></div>
-        </div>
-        <div class="form-row">
           <div class="form-group"><label class="form-label">Час відправлення</label><input type="time" class="form-input" id="sw-time"></div>
+        </div>
+        <div class="form-row">
           <div class="form-group"><label class="form-label">Час прибуття (очік.)</label><input type="time" class="form-input" id="sw-arrival"></div>
-        </div>
-        <div class="form-row">
           <div class="form-group"><label class="form-label">Транспортний засіб</label><select class="form-select" id="sw-vehicle"></select></div>
-          <div class="form-group"><label class="form-label">Водій</label><select class="form-select" id="sw-driver"></select></div>
         </div>
         <div class="form-row">
+          <div class="form-group"><label class="form-label">Водій</label><select class="form-select" id="sw-driver"></select></div>
           <div class="form-group"><label class="form-label">Ціна (сидяче), грн</label><input type="number" class="form-input" id="sw-price-seated" value="120" min="0"></div>
+        </div>
+        <div class="form-row">
           <div class="form-group"><label class="form-label">Ціна (стояче), грн</label><input type="number" class="form-input" id="sw-price-standing" value="80" min="0"></div>
+          <div class="form-group"></div>
         </div>
         <div style="text-align:right; margin-top:16px;">
           <button class="btn btn-ghost" onclick="openScheduleWizard()">← Назад</button>
