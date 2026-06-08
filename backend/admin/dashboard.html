@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Адмін-панель | Експрес Львів–Дрогобич</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Golos+Text:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #181c27;
+    --surface2: #1e2333;
+    --border: #2a3045;
+    --accent: #f5c518;
+    --accent2: #e8a000;
+    --text: #e8ecf4;
+    --text-muted: #7a8499;
+    --text-dim: #4a5568;
+    --red: #ef4444;
+    --red-dim: #2d1515;
+    --green: #22c55e;
+    --green-dim: #0d2818;
+    --blue: #3b82f6;
+    --blue-dim: #0d1a2e;
+    --orange: #f97316;
+    --orange-dim: #2a1500;
+    --purple: #a855f7;
+    --purple-dim: #1e0d2e;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Golos Text', sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; font-size: 14px; }
+
+  /* ── SIDEBAR ── */
+  #sidebar { width: 240px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 20; }
+  .sidebar-logo { padding: 24px 20px 20px; border-bottom: 1px solid var(--border); }
+  .sidebar-logo h1 { font-family: 'Bebas Neue', sans-serif; font-size: 22px; color: var(--accent); letter-spacing: 1px; }
+  .sidebar-logo p { font-size: 11px; color: var(--text-muted); font-weight: 600; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .sidebar-nav { flex: 1; padding: 16px 12px; overflow-y: auto; }
+  .nav-section-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 700; padding: 12px 8px 6px; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); color: var(--text-muted); font-weight: 600; cursor: pointer; transition: all 0.15s; font-size: 13.5px; border: 1px solid transparent; margin-bottom: 2px; }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--accent); color: #000; border-color: var(--accent2); }
+  .nav-item .icon { width: 18px; text-align: center; font-size: 16px; }
+  .sidebar-user { padding: 16px; border-top: 1px solid var(--border); }
+  .user-info { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .user-avatar { width: 36px; height: 36px; background: var(--surface2); border: 2px solid var(--border); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; color: var(--accent); flex-shrink: 0; }
+  .user-name { font-weight: 700; font-size: 13px; }
+  .user-role { font-size: 11px; color: var(--green); }
+  .btn-logout { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text-muted); padding: 8px; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer; transition: all 0.15s; font-family: inherit; font-size: 12px; }
+  .btn-logout:hover { background: var(--red-dim); border-color: var(--red); color: var(--red); }
+
+  /* ── MAIN ── */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  .page { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+  .page.active { display: flex; }
+  .page-header { padding: 20px 32px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  .page-title { font-family: 'Bebas Neue', sans-serif; font-size: 26px; letter-spacing: 1px; color: var(--text); }
+  .page-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+  .page-body { flex: 1; overflow-y: auto; padding: 24px 32px; }
+
+  /* ── BUTTONS ── */
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 18px; border-radius: var(--radius-sm); font-weight: 700; cursor: pointer; transition: all 0.15s; border: 1px solid transparent; font-family: inherit; font-size: 13px; }
+  .btn:active { transform: scale(0.97); }
+  .btn-primary { background: var(--accent); color: #000; border-color: var(--accent2); }
+  .btn-primary:hover { background: var(--accent2); }
+  .btn-ghost { background: var(--surface2); color: var(--text-muted); border-color: var(--border); }
+  .btn-ghost:hover { color: var(--text); border-color: #3a4560; }
+  .btn-danger { background: var(--red-dim); color: var(--red); border-color: #4a1a1a; }
+  .btn-danger:hover { background: var(--red); color: #fff; }
+  .btn-success { background: var(--green-dim); color: var(--green); border-color: #1a3a20; }
+  .btn-success:hover { background: var(--green); color: #000; }
+  .btn-blue { background: var(--blue-dim); color: var(--blue); border-color: #1a2a4a; }
+  .btn-blue:hover { background: var(--blue); color: #fff; }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+  /* ── CARDS & PROGRESS ── */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .progress-bar { height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
+  .progress-fill.danger { background: var(--red); }
+  .progress-fill.warning { background: var(--orange); }
+
+  /* ── BADGES & STATUS ── */
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+  .badge-scheduled { background: var(--blue-dim); color: var(--blue); border: 1px solid #1a2a4a; }
+  .badge-boarding { background: #2a1f00; color: var(--accent); border: 1px solid #3a2e00; }
+  .badge-active { background: var(--green-dim); color: var(--green); border: 1px solid #1a3a20; }
+  .badge-completed { background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); }
+  .badge-closed { background: #1a1a2e; color: var(--purple); border: 1px solid #2a1a3e; }
+  .badge-cancelled { background: var(--red-dim); color: var(--red); border: 1px solid #4a1a1a; }
+  .waitlist-badge { background: var(--blue-dim); color: var(--blue); padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; margin-left: 8px; display: inline-flex; align-items: center; border: 1px solid #1a2a4a; }
+
+  /* ── FILTERS & INPUTS ── */
+  .filters-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .filter-group { display: flex; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+  .filter-btn { padding: 8px 14px; font-size: 12px; font-weight: 700; color: var(--text-muted); cursor: pointer; transition: all 0.15s; background: none; border: none; font-family: inherit; }
+  .filter-btn.active { background: var(--accent); color: #000; }
+  .filter-btn:hover:not(.active) { color: var(--text); background: var(--border); }
+  .form-group { margin-bottom: 16px; }
+  .form-label { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .form-input, .form-select, .form-textarea, select.filter-select {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 12px; border-radius: var(--radius-sm); font-family: inherit; font-size: 13px; outline: none; transition: border-color 0.15s;
+  }
+  .form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--accent); }
+  .form-textarea { resize: vertical; min-height: 80px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  select.filter-select { width: auto; padding: 8px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+
+  /* ── TABLE ── */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; cursor: pointer; user-select: none; }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+  tbody tr:hover { background: var(--surface2); }
+  tbody td { padding: 12px 14px; font-size: 13px; vertical-align: middle; }
+
+  /* ── TRIP CARD ── */
+  .trip-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 20px 20px 24px; margin-bottom: 12px; position: relative; transition: border-color 0.15s, box-shadow 0.15s; }
+  .trip-card:hover { border-color: #3a4560; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+  .trip-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: var(--radius) 0 0 var(--radius); }
+  .trip-card.scheduled::before { background: var(--blue); }
+  .trip-card.boarding::before { background: var(--accent); }
+  .trip-card.active::before { background: var(--green); }
+  .trip-card.completed::before { background: var(--text-dim); }
+  .trip-card.closed::before { background: var(--purple); }
+  .trip-card.cancelled::before { background: var(--red); }
+  .trip-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+  .trip-time { font-family: 'Bebas Neue', sans-serif; font-size: 36px; letter-spacing: 1px; line-height: 1; }
+  .trip-route { font-size: 16px; font-weight: 700; color: var(--text-muted); margin-top: 2px; }
+  .trip-meta { font-size: 12px; color: var(--text-muted); margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .trip-stats { margin-bottom: 14px; }
+  .trip-stats-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+  .trip-actions { display: flex; gap: 8px; }
+
+  /* ── MODALS ── */
+  .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; backdrop-filter: blur(4px); align-items: center; justify-content: center; }
+  .modal-backdrop.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.5); animation: modalIn 0.2s ease; }
+  @keyframes modalIn { from { opacity:0; transform: scale(0.95) translateY(10px); } to { opacity:1; transform: scale(1) translateY(0); } }
+  .modal-header { padding: 20px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .modal-title { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 0.5px; }
+  .modal-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 20px; padding: 2px 6px; transition: all 0.15s; }
+  .modal-close:hover { color: var(--red); background: var(--red-dim); }
+  .modal-body { padding: 24px; }
+  .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+
+  /* ── MANIFEST (SLIDE PANEL) ── */
+  #manifest-backdrop { display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.5); z-index: 30; }
+  #manifest-panel { position: absolute; top: 0; right: 0; width: 480px; height: 100%; background: var(--surface); border-left: 1px solid var(--border); z-index: 40; display: flex; flex-direction: column; transform: translateX(100%); transition: transform 0.3s cubic-bezier(.4,0,.2,1); }
+  #manifest-panel.open { transform: translateX(0); }
+  .manifest-header { padding: 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .manifest-add-form { padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--surface2); flex-shrink: 0; }
+  .manifest-list { flex: 1; overflow-y: auto; padding: 16px; }
+  .passenger-row { display: flex; align-items: center; justify-content: space-between; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; background: var(--surface2); }
+  .passenger-name { font-weight: 700; font-size: 13px; }
+  .passenger-phone { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+  .passenger-source { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+  .source-bot { background: #1a2a4a; color: var(--blue); }
+  .source-phone { background: var(--orange-dim); color: var(--orange); }
+  .source-driver { background: var(--green-dim); color: var(--green); }
+  .source-instagram { background: var(--purple-dim); color: var(--purple); }
+  .passenger-status { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 20px; }
+  .status-reserved { background: #2a1f00; color: var(--accent); }
+  .status-boarded { background: var(--green-dim); color: var(--green); }
+  .status-cancelled { background: var(--red-dim); color: var(--red); }
+  .status-noshow { background: var(--surface); color: var(--text-dim); border: 1px solid var(--border); }
+  .status-waitlist { background: var(--blue-dim); color: var(--blue); border: 1px solid #1a2a4a; }
+
+  /* ── OTHER UI ELEMENTS ── */
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+  .stat-label { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; }
+  .stat-value { font-family: 'Bebas Neue', sans-serif; font-size: 36px; line-height: 1; }
+  .stat-card.accent { border-color: var(--accent); } .stat-card.green { border-color: var(--green); } .stat-card.blue { border-color: var(--blue); } .stat-card.red { border-color: var(--red); }
+  .trust-bar { display: flex; align-items: center; gap: 8px; }
+  .trust-score { font-weight: 900; font-size: 13px; min-width: 32px; text-align: right; }
+  .trust-mini-bar { flex: 1; height: 4px; background: var(--surface2); border-radius: 2px; overflow: hidden; min-width: 60px; }
+  .toast { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 16px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); animation: toastIn 0.25s ease; min-width: 280px; }
+  #toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+  @keyframes toastIn { from { opacity:0; transform: translateX(20px); } to { opacity:1; transform: translateX(0); } }
+  @keyframes toastOut { to { opacity:0; transform: translateX(20px); } }
+  .vehicles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .vehicle-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+  .empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
+  .tab-bar { display: flex; gap: 2px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 3px; width: fit-content; margin-bottom: 20px; }
+  .tab-btn { padding: 7px 16px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; color: var(--text-muted); background: none; border: none; transition: all 0.15s; }
+  .tab-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
+  .tab-content { display: none; } .tab-content.active { display: block; }
+  .hotkey { font-size: 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--text-dim); font-family: monospace; margin-left: 6px; }
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <div class="sidebar-logo">
+    <h1>Експрес Таксі</h1>
+    <p>Адмін-панель v1.1</p>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="nav-section-label">Диспетчер</div>
+    <div class="nav-item active" data-page="schedule"><span class="icon">📅</span> Розклад рейсів</div>
+    <div class="nav-item" data-page="crm"><span class="icon">👥</span> Клієнти (CRM)</div>
+    <div class="nav-item" data-page="broadcast"><span class="icon">📢</span> Сповіщення</div>
+    <div class="nav-section-label">Власник</div>
+    <div class="nav-item" data-page="finance"><span class="icon">💰</span> Фінанси та Звіти</div>
+    <div class="nav-item" data-page="vehicles"><span class="icon">🚌</span> Автопарк</div>
+  </nav>
+  <div class="sidebar-user">
+    <div class="user-info">
+      <div class="user-avatar" id="user-avatar-abbr">АД</div>
+      <div>
+        <div class="user-name" id="current-user-name">Анна Диспетчер</div>
+        <div class="user-role" id="current-user-role">Диспетчер</div>
+      </div>
+    </div>
+    <button class="btn-logout" onclick="handleLogout()">↩ Вийти з системи</button>
+  </div>
+</aside>
+
+<main id="main">
+
+  <div class="page active" id="page-schedule">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Розклад рейсів</div>
+        <div class="page-subtitle" id="schedule-date-label">Завантаження...</div>
+      </div>
+      <div class="filters-row">
+        <div class="filter-group">
+          <button class="filter-btn" data-day="-1">Вчора</button>
+          <button class="filter-btn active" data-day="0">Сьогодні</button>
+          <button class="filter-btn" data-day="1">Завтра</button>
+        </div>
+        <select class="filter-select" id="route-filter">
+          <option value="all">📍 Усі напрямки</option>
+          <option value="drohobych-lviv">Дрогобич → Львів</option>
+          <option value="lviv-drohobych">Львів → Дрогобич</option>
+        </select>
+        <select class="filter-select" id="status-filter">
+          <option value="all">Усі статуси</option>
+          <option value="SCHEDULED">Заплановано</option>
+          <option value="BOARDING">Посадка</option>
+          <option value="ACTIVE">В дорозі</option>
+          <option value="COMPLETED">Завершено</option>
+          <option value="CLOSED">Закрито</option>
+          <option value="CANCELLED">Скасовано</option>
+        </select>
+        <button class="btn btn-primary" onclick="openScheduleWizard()" title="Ctrl+N">
+          <span>+</span> Створити рейс <span class="hotkey">Ctrl+N</span>
+        </button>
+      </div>
+    </div>
+    <div class="page-body" id="schedule-body">
+      <div id="trips-container"></div>
+    </div>
+    <div id="manifest-backdrop" onclick="closeManifest()"></div>
+    <div id="manifest-panel">
+      <div class="manifest-header">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:0.5px;" id="manifest-title">Маніфест рейсу</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px;" id="manifest-subtitle">...</div>
+          </div>
+          <button class="modal-close" onclick="closeManifest()">✕</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px;" id="manifest-stats-row">
+          <span class="badge badge-boarding" id="manifest-seated-badge">👤 0/0 сид.</span>
+          <span class="badge badge-active" id="manifest-standing-badge">🧍 0 стоячих</span>
+          <span class="badge badge-completed" id="manifest-parcel-badge">📦 0 посилок</span>
+          <span class="waitlist-badge" id="manifest-waitlist-badge" style="display:none;">⏳ 0 черга</span>
+        </div>
+      </div>
+      <div class="manifest-add-form">
+        <div class="form-label" style="color:var(--blue);">📞 Додати пасажира (Офлайн)</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;">
+          <div style="flex:1;">
+            <input type="text" class="form-input" id="manifest-phone" placeholder="Телефон (+380...)">
+          </div>
+          <div style="width:100px;">
+            <select class="form-select" id="manifest-source" style="padding:10px 8px;">
+              <option value="PHONE">Телефон</option>
+              <option value="INSTAGRAM">Instagram</option>
+            </select>
+          </div>
+          <div style="width:75px;">
+            <select class="form-select" id="manifest-seats" style="padding:10px 8px;">
+              <option value="1">1 м.</option>
+              <option value="2">2 м.</option>
+              <option value="3">3 м.</option>
+            </select>
+          </div>
+          <button class="btn btn-blue btn-sm" style="padding:10px 14px;" onclick="addPassengerFromManifest()">Додати</button>
+        </div>
+        <div id="manifest-shadow-name-row" style="margin-top:8px;display:none;">
+          <input type="text" class="form-input" id="manifest-passenger-name" placeholder="Ім'я пасажира (новий клієнт)">
+        </div>
+      </div>
+      <div class="manifest-list" id="manifest-passenger-list"></div>
+    </div>
+  </div>
+
+  <div class="page" id="page-crm">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Клієнти — CRM</div>
+        <div class="page-subtitle">Управління пасажирами, Trust Score, блокування</div>
+      </div>
+      <div class="filters-row">
+        <input type="text" class="form-input" id="crm-search" placeholder="🔍 Ім'я або телефон..." style="width:220px;" oninput="renderCRM()">
+        <select class="filter-select" id="crm-filter-status" onchange="renderCRM()">
+          <option value="all">Усі</option>
+          <option value="active">Активні</option>
+          <option value="blocked">Заблоковані</option>
+        </select>
+        <select class="filter-select" id="crm-sort" onchange="renderCRM()">
+          <option value="name">Сортувати: ім'я</option>
+          <option value="trust_asc">Trust Score ↑</option>
+          <option value="trust_desc">Trust Score ↓</option>
+          <option value="noshows">За неявками</option>
+        </select>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="table-wrap card" style="padding:0;">
+        <table id="crm-table">
+          <thead>
+            <tr><th>Пасажир</th><th>Телефон</th><th>Поїздки / Неявки</th><th>Trust Score</th><th>Статус</th><th>Реєстрація</th><th>Дії</th></tr>
+          </thead>
+          <tbody id="crm-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="page-broadcast">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Сповіщення (Broadcast)</div>
+        <div class="page-subtitle">Масова розсилка повідомлень у Telegram-бот</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="card" style="max-width:600px; margin:0 auto;">
+        <div class="form-group">
+          <label class="form-label">Цільова аудиторія</label>
+          <select class="form-select" id="broadcast-trip-select" onchange="renderBroadcastPreview()"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Текст повідомлення</label>
+          <textarea class="form-textarea" id="broadcast-text" placeholder="Увага! Рейс затримується на 15 хвилин..." oninput="renderBroadcastPreview()"></textarea>
+        </div>
+        <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px; margin-bottom:20px;">
+          <div style="font-size:12px; color:var(--text-muted); font-weight:700; margin-bottom:8px; text-transform:uppercase;">Прев'ю розсилки</div>
+          <div style="font-size:14px; margin-bottom:12px;" id="broadcast-preview-text">(текст не введено)</div>
+          <div style="font-size:12px; color:var(--blue); font-weight:700;" id="broadcast-preview-count">Отримувачів: 0</div>
+        </div>
+        <button class="btn btn-primary" style="width:100%; justify-content:center; padding:12px;" onclick="sendBroadcast()">🚀 Надіслати сповіщення</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="page-finance">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Фінанси та Звіти</div>
+        <div class="page-subtitle">Закриття рейсів, аналітика виручки, аудит-слід</div>
+      </div>
+      <div class="filters-row">
+        <input type="date" class="form-input" id="finance-date-from" style="width:150px;">
+        <span style="color:var(--text-muted);font-size:12px;">—</span>
+        <input type="date" class="form-input" id="finance-date-to" style="width:150px;">
+        <button class="btn btn-ghost btn-sm" onclick="renderFinance()">Оновити</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV()">↓ CSV</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="stats-grid" id="finance-stats"></div>
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="pending-close">Потребують закриття</button>
+        <button class="tab-btn" data-tab="closed-trips">Закриті рейси</button>
+        <button class="tab-btn" data-tab="audit-trail">Аудит-слід</button>
+      </div>
+      <div class="tab-content active" id="tab-pending-close"><div id="pending-close-container"></div></div>
+      <div class="tab-content" id="tab-closed-trips">
+        <div class="table-wrap card" style="padding:0;">
+          <table>
+            <thead><tr><th>Дата</th><th>Маршрут</th><th>Водій</th><th>Авто</th><th>Сид.</th><th>Стоячі</th><th>Посилки</th><th>Розрахунок</th><th>Готівка</th><th>Різниця</th><th>Закрив</th></tr></thead>
+            <tbody id="closed-trips-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="tab-content" id="tab-audit-trail">
+        <div class="table-wrap card" style="padding:0;">
+          <table>
+            <thead><tr><th>Час</th><th>Дія</th><th>Рейс</th><th>Пасажир</th><th>Канал</th><th>Виконав</th></tr></thead>
+            <tbody id="audit-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="page-vehicles">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Автопарк</div>
+        <div class="page-subtitle">Управління транспортними засобами (Snapshot-принцип)</div>
+      </div>
+      <button class="btn btn-primary" onclick="openModal('modal-add-vehicle')">+ Додати ТЗ</button>
+    </div>
+    <div class="page-body">
+      <div class="vehicles-grid" id="vehicles-grid"></div>
+    </div>
+  </div>
+
+</main>
+
+<div class="modal-backdrop" id="modal-schedule-wizard">
+  <div class="modal" style="max-width:800px;">
+    <div class="modal-header">
+      <div class="modal-title">Майстер створення розкладу</div>
+      <button class="modal-close" onclick="closeModal('modal-schedule-wizard')">✕</button>
+    </div>
+    <div class="modal-body">
+      
+      <div id="wizard-step-choose" style="display:flex; gap:16px;">
+        <div class="card" style="flex:1; cursor:pointer; text-align:center; border:2px solid transparent;" onclick="wizardSelectMode('single')" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='transparent'">
+          <div style="font-size:40px; margin-bottom:10px;">🚌</div>
+          <div style="font-size:18px; font-weight:700;">Один рейс</div>
+          <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">Створити одиничний рейс на конкретну дату та час.</p>
+        </div>
+        <div class="card" style="flex:1; cursor:pointer; text-align:center; border:2px solid transparent;" onclick="wizardSelectMode('week')" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='transparent'">
+          <div style="font-size:40px; margin-bottom:10px;">📅</div>
+          <div style="font-size:18px; font-weight:700;">Шаблон (Тиждень)</div>
+          <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">Згенерувати розклад на 7 днів за готовим шаблоном.</p>
+        </div>
+      </div>
+
+      <div id="wizard-step-single" style="display:none;">
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Маршрут</label><select class="form-select" id="sw-route"><option value="drohobych-lviv">Дрогобич → Львів</option><option value="lviv-drohobych">Львів → Дрогобич</option></select></div>
+          <div class="form-group"><label class="form-label">Дата відправлення</label><input type="date" class="form-input" id="sw-date"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Час відправлення</label><input type="time" class="form-input" id="sw-time"></div>
+          <div class="form-group"><label class="form-label">Час прибуття (очік.)</label><input type="time" class="form-input" id="sw-arrival"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Транспортний засіб</label><select class="form-select" id="sw-vehicle"></select></div>
+          <div class="form-group"><label class="form-label">Водій</label><select class="form-select" id="sw-driver"></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Ціна (сидяче), грн</label><input type="number" class="form-input" id="sw-price-seated" value="120" min="0"></div>
+          <div class="form-group"><label class="form-label">Ціна (стояче), грн</label><input type="number" class="form-input" id="sw-price-standing" value="80" min="0"></div>
+        </div>
+        <div style="text-align:right; margin-top:16px;">
+          <button class="btn btn-ghost" onclick="openScheduleWizard()">← Назад</button>
+          <button class="btn btn-primary" onclick="wizardSaveSingle()">Створити рейс</button>
+        </div>
+      </div>
+
+      <div id="wizard-step-template" style="display:none;">
+        <div style="margin-bottom:12px; font-size:13px; color:var(--text-muted);">
+          Призначте водія та авто для кожного рейсу. Зніміть галочку з рейсів, які не потрібно створювати. Після збереження водіям буде надіслано PDF-розклад.
+        </div>
+        <div id="wizard-template-table"></div>
+        <div style="text-align:right; margin-top:16px;">
+          <button class="btn btn-ghost" onclick="openScheduleWizard()">← Назад</button>
+          <button class="btn btn-primary" onclick="wizardSaveTemplate()">💾 Зберегти розклад</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-edit-trip">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="edit-trip-modal-title">Редагувати рейс</div>
+      <button class="modal-close" onclick="closeModal('modal-edit-trip')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Маршрут</label><select class="form-select" id="et-route"><option value="drohobych-lviv">Дрогобич → Львів</option><option value="lviv-drohobych">Львів → Дрогобич</option></select></div>
+        <div class="form-group"><label class="form-label">Дата відправлення</label><input type="date" class="form-input" id="et-date"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Час</label><input type="time" class="form-input" id="et-time"></div>
+        <div class="form-group"><label class="form-label">Прибуття</label><input type="time" class="form-input" id="et-arrival"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Автобус</label><select class="form-select" id="et-vehicle"></select></div>
+        <div class="form-group"><label class="form-label">Водій</label><select class="form-select" id="et-driver"></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Ціна (сидяче)</label><input type="number" class="form-input" id="et-price-seated"></div>
+        <div class="form-group"><label class="form-label">Ціна (стояче)</label><input type="number" class="form-input" id="et-price-standing"></div>
+      </div>
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:12px; color:var(--text-muted);">
+        ℹ️ Зміна водія або автобуса автоматично надішле сповіщення пасажирам цього рейсу.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-edit-trip')">Скасувати</button>
+      <button class="btn btn-primary" onclick="saveEditTrip()">Зберегти зміни</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-edit-booking">
+  <div class="modal" style="max-width:400px;">
+    <div class="modal-header">
+      <div class="modal-title">Редагувати квиток</div>
+      <button class="modal-close" onclick="closeModal('modal-edit-booking')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-weight:700; font-size:16px; margin-bottom:16px;" id="eb-passenger-name">Ім'я Пасажира</div>
+      <div class="form-group">
+        <label class="form-label">Кількість місць</label>
+        <select class="form-select" id="eb-seats">
+          <option value="1">1 місце</option>
+          <option value="2">2 місця</option>
+          <option value="3">3 місця</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Перенести на інший рейс</label>
+        <select class="form-select" id="eb-target-trip"></select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-edit-booking')">Скасувати</button>
+      <button class="btn btn-primary" onclick="saveEditBooking()">Зберегти</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-close-trip">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Фінансове закриття рейсу</div>
+      <button class="modal-close" onclick="closeModal('modal-close-trip')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px; margin-bottom:16px;" id="close-trip-summary"></div>
+      
+      <div class="form-group">
+        <label class="form-label" style="color:var(--accent);">Здана водієм готівка (грн)</label>
+        <input type="number" class="form-input" id="ct-cash-submitted" placeholder="Введіть суму, яку здав водій" style="font-size:18px; font-weight:700;">
+        <div style="margin-top:8px; font-size:14px; font-weight:700;" id="ct-cash-diff"></div>
+      </div>
+
+      <div style="background:var(--red-dim); border:1px solid #4a1a1a; border-radius:var(--radius-sm); padding:12px; font-size:12px; color:var(--red);">
+        ⛔ Ця дія незворотна! Рейс отримає статус CLOSED. Усі активні бронювання (RESERVED/PAID) автоматично перейдуть у NOSHOW.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-close-trip')">Скасувати</button>
+      <button class="btn btn-danger" onclick="confirmCloseTrip()">✓ Закрити рейс</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-add-vehicle">
+  <div class="modal">
+    <div class="modal-header"><div class="modal-title" id="vehicle-modal-title">Додати ТЗ</div><button class="modal-close" onclick="closeModal('modal-add-vehicle')">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="av-edit-id">
+      <div class="form-row"><div class="form-group"><label class="form-label">Номерний знак</label><input type="text" class="form-input" id="av-plate"></div><div class="form-group"><label class="form-label">Модель</label><input type="text" class="form-input" id="av-model"></div></div>
+      <div class="form-row"><div class="form-group"><label class="form-label">Сидячих місць</label><input type="number" class="form-input" id="av-seats"></div><div class="form-group"><label class="form-label">Стоячих місць</label><input type="number" class="form-input" id="av-standing"></div></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('modal-add-vehicle')">Скасувати</button><button class="btn btn-primary" onclick="saveVehicle()">Зберегти</button></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-passenger">
+  <div class="modal">
+    <div class="modal-header"><div class="modal-title">Профіль пасажира</div><button class="modal-close" onclick="closeModal('modal-passenger')">✕</button></div>
+    <div class="modal-body" id="modal-passenger-body"></div>
+    <div class="modal-footer" id="modal-passenger-footer"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="confirm-modal">
+  <div class="modal" style="max-width:380px;">
+    <div class="modal-body" style="padding:28px 24px 8px;">
+      <div class="confirm-icon" id="confirm-icon" style="font-size:40px; text-align:center; margin-bottom:12px;">⚠️</div>
+      <div class="confirm-title" id="confirm-title" style="font-size:18px; font-weight:900; text-align:center; margin-bottom:8px;">Підтвердіть дію</div>
+      <p class="confirm-msg" id="confirm-msg" style="font-size:13px; color:var(--text-muted); text-align:center; line-height:1.6;">Ви впевнені?</p>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('confirm-modal')">Скасувати</button><button class="btn btn-danger" id="confirm-ok-btn">Підтвердити</button></div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="admin.js" defer></script>
+
+</body>
+</html>
