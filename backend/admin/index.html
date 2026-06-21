@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Адмін-панель | Експрес Львів–Дрогобич</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Golos+Text:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<aside id="sidebar">
+  <div class="sidebar-logo">
+    <h1>Експрес Таксі</h1>
+    <p>Адмін-панель v1.1</p>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="nav-section-label">Диспетчер</div>
+    <div class="nav-item active" data-page="schedule"><span class="icon">📅</span> Розклад рейсів</div>
+    <div class="nav-item" data-page="crm"><span class="icon">👥</span> Клієнти (CRM)</div>
+    <div class="nav-item" data-page="broadcast"><span class="icon">📢</span> Сповіщення</div>
+    
+    <div class="owner-only">
+      <div class="nav-section-label">Власник</div>
+      <div class="nav-item" data-page="finance"><span class="icon">💰</span> Фінанси та Звіти</div>
+      <div class="nav-item" data-page="vehicles"><span class="icon">🚌</span> Автопарк</div>
+    </div>
+  </nav>
+  <div class="sidebar-user">
+    <div class="user-info">
+      <div class="user-avatar" id="user-avatar-abbr">АД</div>
+      <div>
+        <div class="user-name" id="current-user-name">Анна Диспетчер</div>
+        <div class="user-role" id="current-user-role">Диспетчер</div>
+      </div>
+    </div>
+    <button class="btn-logout" onclick="handleLogout()">↩ Вийти з системи</button>
+  </div>
+</aside>
+
+<main id="main">
+
+  <div class="page active" id="page-schedule">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Розклад рейсів</div>
+        <div class="page-subtitle" id="schedule-date-label">Завантаження...</div>
+      </div>
+      <div class="filters-row">
+        <div class="filter-group">
+          <button class="filter-btn" data-day="-1">Вчора</button>
+          <button class="filter-btn active" data-day="0">Сьогодні</button>
+          <button class="filter-btn" data-day="1">Завтра</button>
+        </div>
+        <select class="filter-select" id="route-filter">
+          <option value="all">📍 Усі напрямки</option>
+          <option value="drohobych-lviv">Дрогобич → Львів</option>
+          <option value="lviv-drohobych">Львів → Дрогобич</option>
+        </select>
+        <select class="filter-select" id="status-filter">
+          <option value="all">Усі статуси</option>
+          <option value="SCHEDULED">Заплановано</option>
+          <option value="BOARDING">Посадка</option>
+          <option value="ACTIVE">В дорозі</option>
+          <option value="COMPLETED">Завершено</option>
+          <option value="CLOSED">Закрито</option>
+          <option value="CANCELLED">Скасовано</option>
+        </select>
+        <button class="btn btn-primary" onclick="openScheduleWizard()" title="Ctrl+N">
+          <span>+</span> Створити рейс <span class="hotkey">Ctrl+N</span>
+        </button>
+      </div>
+    </div>
+    <div class="page-body" id="schedule-body">
+      <div id="trips-container"></div>
+    </div>
+    <div id="manifest-backdrop" onclick="closeManifest()"></div>
+    <div id="manifest-panel">
+      <div class="manifest-header">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:0.5px;" id="manifest-title">Маніфест рейсу</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px;" id="manifest-subtitle">...</div>
+          </div>
+          <button class="modal-close" onclick="closeManifest()">✕</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px;" id="manifest-stats-row">
+          <span class="badge badge-boarding" id="manifest-seated-badge">👤 0/0 сид.</span>
+          <span class="badge badge-active" id="manifest-standing-badge">🧍 0 стоячих</span>
+          <span class="badge badge-completed" id="manifest-parcel-badge">📦 0 посилок</span>
+          <span class="waitlist-badge" id="manifest-waitlist-badge" style="display:none;">⏳ 0 черга</span>
+        </div>
+      </div>
+      <div class="manifest-add-form">
+        <div class="form-label" style="color:var(--blue);">📞 Додати пасажира (Офлайн)</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;">
+          <div style="flex:1;">
+            <input type="text" class="form-input" id="manifest-phone" placeholder="Телефон (+380...)">
+          </div>
+          <div style="width:100px;">
+            <select class="form-select" id="manifest-source" style="padding:10px 8px;">
+              <option value="PHONE">Телефон</option>
+              <option value="INSTAGRAM">Instagram</option>
+            </select>
+          </div>
+          <div style="width:75px;">
+            <select class="form-select" id="manifest-seats" style="padding:10px 8px;">
+              <option value="1">1 м.</option>
+              <option value="2">2 м.</option>
+              <option value="3">3 м.</option>
+            </select>
+          </div>
+          <button class="btn btn-blue btn-sm" style="padding:10px 14px;" onclick="addPassengerFromManifest()">Додати</button>
+        </div>
+        <div id="manifest-shadow-name-row" style="margin-top:8px;display:none;">
+          <input type="text" class="form-input" id="manifest-passenger-name" placeholder="Ім'я пасажира (новий клієнт)">
+        </div>
+      </div>
+      <div class="manifest-list" id="manifest-passenger-list"></div>
+    </div>
+  </div>
+
+  <div class="page" id="page-crm">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Клієнти — CRM</div>
+        <div class="page-subtitle">Управління пасажирами, Trust Score, блокування</div>
+      </div>
+      <div class="filters-row">
+        <input type="text" class="form-input" id="crm-search" placeholder="🔍 Ім'я або телефон..." style="width:220px;" oninput="renderCRM()">
+        <select class="filter-select" id="crm-filter-status" onchange="renderCRM()">
+          <option value="all">Усі</option>
+          <option value="active">Активні</option>
+          <option value="blocked">Заблоковані</option>
+        </select>
+        <select class="filter-select" id="crm-sort" onchange="renderCRM()">
+          <option value="name">Сортувати: ім'я</option>
+          <option value="trust_asc">Trust Score ↑</option>
+          <option value="trust_desc">Trust Score ↓</option>
+          <option value="noshows">За неявками</option>
+        </select>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="table-wrap card" style="padding:0;">
+        <table id="crm-table">
+          <thead>
+            <tr><th>Пасажир</th><th>Телефон</th><th>Поїздки / Неявки</th><th>Trust Score</th><th>Статус</th><th>Реєстрація</th><th>Дії</th></tr>
+          </thead>
+          <tbody id="crm-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="page" id="page-broadcast">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Сповіщення (Broadcast)</div>
+        <div class="page-subtitle">Масова розсилка повідомлень у Telegram-бот</div>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="card" style="max-width:600px; margin:0 auto;">
+        <div class="form-group">
+          <label class="form-label">Цільова аудиторія</label>
+          <select class="form-select" id="broadcast-trip-select" onchange="renderBroadcastPreview()"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Текст повідомлення</label>
+          <textarea class="form-textarea" id="broadcast-text" placeholder="Увага! Рейс затримується на 15 хвилин..." oninput="renderBroadcastPreview()"></textarea>
+        </div>
+        <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px; margin-bottom:20px;">
+          <div style="font-size:12px; color:var(--text-muted); font-weight:700; margin-bottom:8px; text-transform:uppercase;">Прев'ю розсилки</div>
+          <div style="font-size:14px; margin-bottom:12px;" id="broadcast-preview-text">(текст не введено)</div>
+          <div style="font-size:12px; color:var(--blue); font-weight:700;" id="broadcast-preview-count">Отримувачів: 0</div>
+        </div>
+        <button class="btn btn-primary" style="width:100%; justify-content:center; padding:12px;" onclick="sendBroadcast()">🚀 Надіслати сповіщення</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page owner-only" id="page-finance">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Фінанси та Звіти</div>
+        <div class="page-subtitle">Закриття рейсів, аналітика виручки, аудит-слід</div>
+      </div>
+      <div class="filters-row">
+        <input type="date" class="form-input" id="finance-date-from" style="width:150px;">
+        <span style="color:var(--text-muted);font-size:12px;">—</span>
+        <input type="date" class="form-input" id="finance-date-to" style="width:150px;">
+        <button class="btn btn-ghost btn-sm" onclick="renderFinance()">Оновити</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV()">↓ CSV</button>
+      </div>
+    </div>
+    <div class="page-body">
+      <div class="stats-grid" id="finance-stats"></div>
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="pending-close">Потребують закриття</button>
+        <button class="tab-btn" data-tab="closed-trips">Закриті рейси</button>
+        <button class="tab-btn" data-tab="audit-trail">Аудит-слід</button>
+      </div>
+      <div class="tab-content active" id="tab-pending-close"><div id="pending-close-container"></div></div>
+      <div class="tab-content" id="tab-closed-trips">
+        <div class="table-wrap card" style="padding:0;">
+          <table>
+            <thead><tr><th>Дата</th><th>Маршрут</th><th>Водій</th><th>Авто</th><th>Сид.</th><th>Стоячі</th><th>Посилки</th><th>Розрахунок</th><th>Готівка</th><th>Різниця</th><th>Закрив</th></tr></thead>
+            <tbody id="closed-trips-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="tab-content" id="tab-audit-trail">
+        <div class="table-wrap card" style="padding:0;">
+          <table>
+            <thead><tr><th>Час</th><th>Дія</th><th>Рейс</th><th>Пасажир</th><th>Канал</th><th>Виконав</th></tr></thead>
+            <tbody id="audit-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page owner-only" id="page-vehicles">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Автопарк</div>
+        <div class="page-subtitle">Управління транспортними засобами (Snapshot-принцип)</div>
+      </div>
+      <button class="btn btn-primary" onclick="openModal('modal-add-vehicle')">+ Додати ТЗ</button>
+    </div>
+    <div class="page-body">
+      <div class="vehicles-grid" id="vehicles-grid"></div>
+    </div>
+  </div>
+
+</main>
+
+<div class="modal-backdrop" id="modal-schedule-wizard">
+  <div class="modal" style="max-width:800px;">
+    <div class="modal-header">
+      <div class="modal-title">Створення розкладу</div>
+      <button class="modal-close" onclick="closeModal('modal-schedule-wizard')">✕</button>
+    </div>
+    <div class="modal-body">
+      
+      <div id="wizard-step-choose" style="display:flex; gap:16px;">
+        <div class="card" style="flex:1; cursor:pointer; text-align:center; border:2px solid transparent;" onclick="wizardSelectMode('single')" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='transparent'">
+          <div style="font-size:40px; margin-bottom:10px;">🚌</div>
+          <div style="font-size:18px; font-weight:700;">Один рейс</div>
+          <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">Створити одиночний рейс з нуля.</p>
+        </div>
+        <div class="card" style="flex:1; cursor:pointer; text-align:center; border:2px solid transparent;" onclick="wizardSelectMode('template')" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='transparent'">
+          <div style="font-size:40px; margin-bottom:10px;">📅</div>
+          <div style="font-size:18px; font-weight:700;">Розклад на день (за шаблоном)</div>
+          <p style="font-size:12px; color:var(--text-muted); margin-top:8px;">Вибрати дату. Система автоматично підтягне шаблон (будень/вихідний).</p>
+        </div>
+      </div>
+
+      <div id="wizard-step-single" style="display:none;">
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Маршрут</label><select class="form-select" id="sw-route"><option value="drohobych-lviv">Дрогобич → Львів</option><option value="lviv-drohobych">Львів → Дрогобич</option></select></div>
+          <div class="form-group"><label class="form-label">Дата відправлення</label><input type="date" class="form-input" id="sw-date"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Час відправлення</label><input type="time" class="form-input" id="sw-time"></div>
+          <div class="form-group"><label class="form-label">Час прибуття (очік.)</label><input type="time" class="form-input" id="sw-arrival"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Транспортний засіб</label><select class="form-select" id="sw-vehicle"></select></div>
+          <div class="form-group"><label class="form-label">Водій</label><select class="form-select" id="sw-driver"></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Ціна (сидяче), грн</label><input type="number" class="form-input" id="sw-price-seated" value="120" min="0"></div>
+          <div class="form-group"><label class="form-label">Ціна (стояче), грн</label><input type="number" class="form-input" id="sw-price-standing" value="80" min="0"></div>
+        </div>
+        <div style="text-align:right; margin-top:16px;">
+          <button class="btn btn-ghost" onclick="openScheduleWizard()">← Назад</button>
+          <button class="btn btn-primary" onclick="wizardSaveSingle()">Створити рейс</button>
+        </div>
+      </div>
+
+      <div id="wizard-step-template" style="display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:16px; background:var(--surface2); padding:16px; border-radius:var(--radius-sm);">
+          <div>
+            <label class="form-label">Оберіть дату для генерації</label>
+            <input type="date" class="form-input" id="wt-date" onchange="loadTemplateForDate(this.value)">
+          </div>
+          <div id="wt-day-info" style="font-size:16px; font-weight:900; color:var(--accent);"></div>
+        </div>
+        <div style="margin-bottom:12px; font-size:13px; color:var(--text-muted);">
+          Ви можете видаляти рейси або додавати додаткові. <b>Ці зміни стосуються лише обраної дати і не змінюють базовий шаблон власника.</b>
+        </div>
+        <div id="wizard-template-table"></div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:12px;" onclick="addExtraRowToWizard()">+ Додати позачерговий рейс</button>
+        <div style="text-align:right; margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">
+          <button class="btn btn-ghost" onclick="openScheduleWizard()">← Назад</button>
+          <button class="btn btn-primary" onclick="wizardSaveTemplateDay()">💾 Зберегти розклад на день</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-edit-trip">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="edit-trip-modal-title">Редагувати рейс</div>
+      <button class="modal-close" onclick="closeModal('modal-edit-trip')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Маршрут</label><select class="form-select" id="et-route"><option value="drohobych-lviv">Дрогобич → Львів</option><option value="lviv-drohobych">Львів → Дрогобич</option></select></div>
+        <div class="form-group"><label class="form-label">Дата відправлення</label><input type="date" class="form-input" id="et-date"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Час</label><input type="time" class="form-input" id="et-time"></div>
+        <div class="form-group"><label class="form-label">Прибуття</label><input type="time" class="form-input" id="et-arrival"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Автобус</label><select class="form-select" id="et-vehicle"></select></div>
+        <div class="form-group"><label class="form-label">Водій</label><select class="form-select" id="et-driver"></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Ціна (сидяче)</label><input type="number" class="form-input" id="et-price-seated"></div>
+        <div class="form-group"><label class="form-label">Ціна (стояче)</label><input type="number" class="form-input" id="et-price-standing"></div>
+      </div>
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:12px; color:var(--text-muted);">
+        ℹ️ Зміна водія або автобуса автоматично надішле сповіщення пасажирам цього рейсу.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-edit-trip')">Скасувати</button>
+      <button class="btn btn-primary" onclick="saveEditTrip()">Зберегти зміни</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-edit-booking">
+  <div class="modal" style="max-width:400px;">
+    <div class="modal-header">
+      <div class="modal-title">Редагувати квиток</div>
+      <button class="modal-close" onclick="closeModal('modal-edit-booking')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-weight:700; font-size:16px; margin-bottom:16px;" id="eb-passenger-name">Ім'я Пасажира</div>
+      <div class="form-group">
+        <label class="form-label">Кількість місць</label>
+        <select class="form-select" id="eb-seats">
+          <option value="1">1 місце</option>
+          <option value="2">2 місця</option>
+          <option value="3">3 місця</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Перенести на інший рейс</label>
+        <select class="form-select" id="eb-target-trip"></select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-edit-booking')">Скасувати</button>
+      <button class="btn btn-primary" onclick="saveEditBooking()">Зберегти</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-close-trip">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Фінансове закриття рейсу</div>
+      <button class="modal-close" onclick="closeModal('modal-close-trip')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px; margin-bottom:16px;" id="close-trip-summary"></div>
+      
+      <div class="form-group">
+        <label class="form-label" style="color:var(--accent);">Здана водієм готівка (грн)</label>
+        <input type="number" class="form-input" id="ct-cash-submitted" placeholder="Введіть суму, яку здав водій" style="font-size:18px; font-weight:700;">
+        <div style="margin-top:8px; font-size:14px; font-weight:700;" id="ct-cash-diff"></div>
+      </div>
+
+      <div style="background:var(--red-dim); border:1px solid #4a1a1a; border-radius:var(--radius-sm); padding:12px; font-size:12px; color:var(--red);">
+        ⛔ Ця дія незворотна! Рейс отримає статус CLOSED. Усі активні бронювання (RESERVED/PAID) автоматично перейдуть у NOSHOW.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-close-trip')">Скасувати</button>
+      <button class="btn btn-danger" onclick="confirmCloseTrip()">✓ Закрити рейс</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-add-vehicle">
+  <div class="modal">
+    <div class="modal-header"><div class="modal-title" id="vehicle-modal-title">Додати ТЗ</div><button class="modal-close" onclick="closeModal('modal-add-vehicle')">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="av-edit-id">
+      <div class="form-row"><div class="form-group"><label class="form-label">Номерний знак</label><input type="text" class="form-input" id="av-plate"></div><div class="form-group"><label class="form-label">Модель</label><input type="text" class="form-input" id="av-model"></div></div>
+      <div class="form-row"><div class="form-group"><label class="form-label">Сидячих місць</label><input type="number" class="form-input" id="av-seats"></div><div class="form-group"><label class="form-label">Стоячих місць</label><input type="number" class="form-input" id="av-standing"></div></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('modal-add-vehicle')">Скасувати</button><button class="btn btn-primary" onclick="saveVehicle()">Зберегти</button></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modal-passenger">
+  <div class="modal">
+    <div class="modal-header"><div class="modal-title">Профіль пасажира</div><button class="modal-close" onclick="closeModal('modal-passenger')">✕</button></div>
+    <div class="modal-body" id="modal-passenger-body"></div>
+    <div class="modal-footer" id="modal-passenger-footer"></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="confirm-modal">
+  <div class="modal" style="max-width:380px;">
+    <div class="modal-body" style="padding:28px 24px 8px;">
+      <div class="confirm-icon" id="confirm-icon" style="font-size:40px; text-align:center; margin-bottom:12px;">⚠️</div>
+      <div class="confirm-title" id="confirm-title" style="font-size:18px; font-weight:900; text-align:center; margin-bottom:8px;">Підтвердіть дію</div>
+      <p class="confirm-msg" id="confirm-msg" style="font-size:13px; color:var(--text-muted); text-align:center; line-height:1.6;">Ви впевнені?</p>
+    </div>
+    <div class="modal-footer"><button class="btn btn-ghost" onclick="closeModal('confirm-modal')">Скасувати</button><button class="btn btn-danger" id="confirm-ok-btn">Підтвердити</button></div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="data.js" defer></script>
+<script src="modals.js" defer></script>
+<script src="api.js" defer></script>
+<script src="schedule.js" defer></script>
+<script src="manifests.js" defer></script>
+<script src="crm.js" defer></script>
+<script src="finance.js" defer></script>
+<script src="main.js" defer></script>
+
+</body>
+</html>
