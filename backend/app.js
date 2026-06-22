@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let telegramId = tg.initDataUnsafe?.user?.id || 1685900931;
     let fallbackName = tg.initDataUnsafe?.user?.first_name || "Користувач";
 
-    const API_URL = 'https://da78ae539bebd0.lhr.life/api';
+    const API_URL = window.location.origin + '/api';
 
     const expandedTrips = new Set();
 

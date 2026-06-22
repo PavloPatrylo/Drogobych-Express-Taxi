@@ -6,6 +6,11 @@
 <title>Адмін-панель | Експрес Львів–Дрогобич</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Golos+Text:wght@400;500;600;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<script>
+  if (!localStorage.getItem('admin_token')) {
+    window.location.href = 'login.html';
+  }
+</script>
 </head>
 <body>
 
@@ -424,11 +429,11 @@
 
 <div id="toast-container"></div>
 
-<script src="data.js" defer></script>
+<script src="state.js" defer></script>
 <script src="modals.js" defer></script>
 <script src="api.js" defer></script>
 <script src="schedule.js" defer></script>
-<script src="manifests.js" defer></script>
+<script src="manifest.js" defer></script>
 <script src="crm.js" defer></script>
 <script src="finance.js" defer></script>
 <script src="main.js" defer></script>

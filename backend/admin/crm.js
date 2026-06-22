@@ -45,18 +45,28 @@ function renderCRM() {
 
 function blockPassenger(id) {
   const p = passengers.find(x => x.id === id);
-  showConfirm('🚫', `Заблокувати пасажира?`, `${p.full_name}\n${p.phone}\n\nПасажир не зможе бронювати місця.`, () => {
-    p.is_active = false;
-    toast('error', `${p.full_name} заблокований`);
-    renderCRM();
+  showConfirm('🚫', `Заблокувати пасажира?`, `${p.full_name}\n${p.phone}\n\nПасажир не зможе бронювати місця.`, async () => {
+    try {
+      await api.post(`/passengers/${id}/block`);
+      p.is_active = false;
+      toast('error', `${p.full_name} заблокований`);
+      renderCRM();
+    } catch (error) {
+      toast('error', `Помилка блокування: ${error.message}`);
+    }
   });
 }
 
-function unblockPassenger(id) {
+async function unblockPassenger(id) {
   const p = passengers.find(x => x.id === id);
-  p.is_active = true;
-  toast('success', `${p.full_name} розблокований`);
-  renderCRM();
+  try {
+    await api.post(`/passengers/${id}/unblock`);
+    p.is_active = true;
+    toast('success', `${p.full_name} розблокований`);
+    renderCRM();
+  } catch (error) {
+    toast('error', `Помилка розблокування: ${error.message}`);
+  }
 }
 
 function viewPassenger(id) {

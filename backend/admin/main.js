@@ -72,8 +72,7 @@ document.addEventListener('keydown', (e) => {
 // ── 5. ВИХІД З СИСТЕМИ (LOGOUT) ──
 function handleLogout() {
     showConfirm('👋', 'Вийти з системи?', 'Ваш сеанс буде завершено, токен видалено.', () => {
-        localStorage.removeItem('admin_token');
-        token = null;
+        api.clearToken();
         window.location.reload(); // Перезавантажуємо сторінку, щоб викинуло на введення токена
     });
 }
@@ -100,16 +99,19 @@ async function init() {
         }
 
         // Застосовуємо RBAC (ховаємо елементи власника, якщо це звичайний диспетчер)
-        if (me.role !== 'ADMIN' && me.role !== 'superuser') {
+        const roleUpper = (me.role || "").toUpperCase();
+        if (roleUpper !== 'ADMIN' && roleUpper !== 'SUPERUSER') {
             document.querySelectorAll('.owner-only').forEach(el => el.classList.add('hidden'));
         }
 
         // 2. Завантажуємо базові дані паралельно (шоб було швидше)
-        const [vData, uData, tData, pData] = await Promise.all([
+        const [vData, uData, tData, pData, bData, aData] = await Promise.all([
             apiFetch('/vehicles').catch(() => []),       // Автопарк
             apiFetch('/users').catch(() => []),          // Персонал (водії)
             apiFetch('/trips').catch(() => []),          // Рейси
-            apiFetch('/passengers').catch(() => [])      // Клієнти (CRM)
+            apiFetch('/passengers').catch(() => []),     // Клієнти (CRM)
+            apiFetch('/bookings').catch(() => []),       // Бронювання
+            apiFetch('/audit/log').catch(() => [])       // Аудит-слід
         ]);
 
         // Наповнюємо глобальні змінні з data.js
@@ -117,6 +119,8 @@ async function init() {
         drivers = uData.filter(u => u.is_driver || u.role === 'driver'); 
         trips = tData;
         passengers = pData;
+        bookings = bData;
+        auditLog = aData;
 
         // 3. Запускаємо відмальовку інтерфейсу
         if (typeof populateCreateTripDropdowns === 'function') populateCreateTripDropdowns();

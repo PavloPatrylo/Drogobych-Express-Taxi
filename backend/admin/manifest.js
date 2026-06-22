@@ -50,49 +50,84 @@ function renderManifestList(tripId) {
 }
 
 function cancelBooking(bookingId) {
-  showConfirm('❌', 'Скасувати бронювання?', 'Місце звільниться для нових пасажирів.', () => {
-    const bk = bookings.find(x => x.id === bookingId);
-    if (bk) bk.status = 'CANCELLED';
-    toast('info', 'Бронювання скасовано');
-    if (currentManifestTripId) {
-      renderManifestList(currentManifestTripId);
-      const stats = getTripStats(currentManifestTripId);
-      const t = trips.find(x => x.id === currentManifestTripId);
-      document.getElementById('manifest-seated-badge').textContent = `👤 ${stats.seated}/${t.seats_limit_snapshot} сид.`;
+  showConfirm('❌', 'Скасувати бронювання?', 'Місце звільниться для нових пасажирів.', async () => {
+    try {
+      await api.request(`/bookings/${bookingId}/cancel`, { method: 'PATCH' });
+      
+      // Re-fetch bookings and audit log to keep state in sync
+      const [bData, aData] = await Promise.all([
+        apiFetch('/bookings').catch(() => []),
+        apiFetch('/audit/log').catch(() => [])
+      ]);
+      bookings = bData;
+      auditLog = aData;
+      
+      toast('info', 'Бронювання скасовано');
+      if (currentManifestTripId) {
+        renderManifestList(currentManifestTripId);
+        const stats = getTripStats(currentManifestTripId);
+        const t = trips.find(x => x.id === currentManifestTripId);
+        document.getElementById('manifest-seated-badge').textContent = `👤 ${stats.seated}/${t.seats_limit_snapshot} сид.`;
+      }
+      renderSchedule();
+    } catch (error) {
+      toast('error', `Помилка скасування: ${error.message}`);
     }
-    renderSchedule();
   });
 }
 
-function addPassengerFromManifest() {
+async function addPassengerFromManifest() {
   const phone = document.getElementById('manifest-phone').value.trim();
   const seats = parseInt(document.getElementById('manifest-seats').value);
+  const source = document.getElementById('manifest-source').value;
   const t = trips.find(x => x.id === currentManifestTripId);
   if (!phone) { toast('error', 'Введіть номер телефону'); return; }
   if (!t) return;
   const stats = getTripStats(currentManifestTripId);
   if (stats.seated + seats > t.seats_limit_snapshot) { toast('error', 'Недостатньо місць на рейсі'); return; }
+
   // знайти існуючого пасажира або створити "тіньовий" профіль
   let p = passengers.find(x => x.phone === phone);
+  let nameInput = null;
   if (!p) {
-    const nameInput = document.getElementById('manifest-passenger-name').value.trim();
+    nameInput = document.getElementById('manifest-passenger-name').value.trim();
     if (!nameInput) {
       document.getElementById('manifest-shadow-name-row').style.display = 'block';
       document.getElementById('manifest-passenger-name').focus();
       toast('info', 'Введіть ім\'я нового пасажира (тіньовий профіль)');
       return;
     }
-    p = { id: nextPassengerId++, full_name: nameInput, phone, telegram_id: null, is_active: true, created_at: isoDate(TODAY), total_trips: 0, total_noshows: 0 };
-    passengers.push(p);
-    toast('info', `Створено тіньовий профіль для ${nameInput}`);
-    document.getElementById('manifest-shadow-name-row').style.display = 'none';
-    document.getElementById('manifest-passenger-name').value = '';
   }
-  bookings.push({ id: nextBookingId++, trip_id: currentManifestTripId, passenger_id: p.id, created_by_id: 10, booking_type: 'SEATED', source: 'PHONE', status: 'RESERVED', passengers_count: seats, amount_paid: t.price_seated * seats, created_at: new Date().toISOString(), validated_by_id: null, validated_at: null, comment: null });
-  document.getElementById('manifest-phone').value = '';
-  toast('success', `Бронювання додано для ${p.full_name}`);
-  renderManifestList(currentManifestTripId);
-  const stats2 = getTripStats(currentManifestTripId);
-  document.getElementById('manifest-seated-badge').textContent = `👤 ${stats2.seated}/${t.seats_limit_snapshot} сид.`;
-  renderSchedule();
+
+  try {
+    await api.post('/bookings/offline', {
+      trip_id: currentManifestTripId,
+      phone: phone,
+      full_name: p ? p.full_name : nameInput,
+      source: source,
+      seats: seats
+    });
+
+    // Re-fetch all passengers, bookings and audit logs to update everything cleanly
+    const [pData, bData, aData] = await Promise.all([
+      apiFetch('/passengers').catch(() => []),
+      apiFetch('/bookings').catch(() => []),
+      apiFetch('/audit/log').catch(() => [])
+    ]);
+    passengers = pData;
+    bookings = bData;
+    auditLog = aData;
+
+    document.getElementById('manifest-phone').value = '';
+    document.getElementById('manifest-passenger-name').value = '';
+    document.getElementById('manifest-shadow-name-row').style.display = 'none';
+
+    toast('success', `Бронювання додано!`);
+    renderManifestList(currentManifestTripId);
+    const stats2 = getTripStats(currentManifestTripId);
+    document.getElementById('manifest-seated-badge').textContent = `👤 ${stats2.seated}/${t.seats_limit_snapshot} сид.`;
+    renderSchedule();
+  } catch (error) {
+    toast('error', `Помилка створення бронювання: ${error.message}`);
+  }
 }
