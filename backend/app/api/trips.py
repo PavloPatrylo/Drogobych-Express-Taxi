@@ -20,7 +20,8 @@ from app.db.models import (
     TripStatus,
     BookingStatus,
     BookingType,
-    UserRole
+    UserRole,
+    AuditLog,
 )
 
 from datetime import datetime
@@ -111,7 +112,7 @@ async def search_trips(
     
 # === ОТРИМАТИ МАНІФЕСТ ДЛЯ ВОДІЯ (UC-D1 - FULL) ===
 @router.get("/driver/{telegram_id}/manifest", response_model=list[TripManifest])
-async def get_driver_manifest(telegram_id: int):
+async def get_driver_manifest(telegram_id: int, target_date: str = None):
     async with async_session_maker() as session:
         # 1. Знаходимо водія
         user_stmt = select(User).where(User.telegram_id == telegram_id, User.role == UserRole.DRIVER)
@@ -120,7 +121,16 @@ async def get_driver_manifest(telegram_id: int):
         if not driver:
             raise HTTPException(status_code=403, detail="Доступ заборонено")
 
-        # 2. Отримуємо всі рейси водія
+        now_kyiv = datetime.now(KYIV_TZ)
+        if target_date:
+            try:
+                filter_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+            except ValueError:
+                filter_date = now_kyiv.date()
+        else:
+            filter_date = now_kyiv.date()
+
+        # 2. Отримуємо рейси водія
         FromLoc = aliased(Location)
         ToLoc = aliased(Location)
         
@@ -129,13 +139,18 @@ async def get_driver_manifest(telegram_id: int):
             .join(FromLoc, Trip.from_location_id == FromLoc.id)
             .join(ToLoc, Trip.to_location_id == ToLoc.id)
             .where(Trip.driver_id == driver.id)
-            .where(Trip.status.in_([TripStatus.SCHEDULED, TripStatus.BOARDING, TripStatus.ACTIVE]))
+            .where(Trip.status.in_([TripStatus.SCHEDULED, TripStatus.BOARDING, TripStatus.ACTIVE, TripStatus.COMPLETED, TripStatus.CLOSED]))
             .order_by(Trip.departure_time)
         )
         trips_rows = (await session.execute(trips_stmt)).all()
 
         manifests = []
         for trip, from_name, to_name in trips_rows:
+            if trip.departure_time:
+                dep_aware = trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time
+                trip_date_kyiv = dep_aware.astimezone(KYIV_TZ).date()
+                if trip_date_kyiv != filter_date:
+                    continue
             # !!! ОДИНАКОВИЙ ФІЛЬТР ДЛЯ ВСІХ ТИПІВ БРОНЮВАНЬ !!!
             # Ми обов'язково фільтруємо за trip.id
             bookings_stmt = (
@@ -278,11 +293,17 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
         FromLoc = aliased(Location)
         ToLoc = aliased(Location)
         
+        start_dt = datetime.combine(filter_date, time.min, tzinfo=KYIV_TZ)
+        end_dt = datetime.combine(filter_date, time.max, tzinfo=KYIV_TZ)
+
         trips_stmt = (
             select(Trip, FromLoc.name, ToLoc.name)
             .join(FromLoc, Trip.from_location_id == FromLoc.id)
             .join(ToLoc, Trip.to_location_id == ToLoc.id)
             .where(Trip.driver_id == driver.id)
+            .where(Trip.departure_time >= start_dt)
+            .where(Trip.departure_time <= end_dt)
+            .where(Trip.status.in_([TripStatus.COMPLETED, TripStatus.CLOSED]))
             .order_by(Trip.departure_time)
         )
         trips_rows = (await session.execute(trips_stmt)).all()
@@ -291,24 +312,9 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
         total_daily_sum = 0.0
 
         for trip, from_name, to_name in trips_rows:
-            status_str = str(getattr(trip.status, 'name', trip.status)).upper()
-            if 'COMPLETED' not in status_str:
-                continue 
-            
-            # 2. Конвертуємо час відправлення з бази в київський пояс для порівняння дати
-            if trip.departure_time:
-                # Переконуємось, що об'єкт datetime має інформацію про зону (зазвичай UTC з бази)
-                dep_time_aware = trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time
-                trip_date_kyiv = dep_time_aware.astimezone(KYIV_TZ).date()
-            else:
-                continue
-
-            if trip_date_kyiv != filter_date:
-                continue
-
             bookings_stmt = select(Booking).where(
                 Booking.trip_id == trip.id,
-                Booking.status == BookingStatus.BOARDED
+                Booking.status.in_([BookingStatus.BOARDED, BookingStatus.PAID, BookingStatus.RESERVED])
             )
             bookings = (await session.execute(bookings_stmt)).scalars().all()
 
@@ -316,13 +322,23 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
             standing = sum(b.passengers_count for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'STANDING')
             parcels = sum(1 for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'PARCEL')
             
-            trip_sum = sum(float(b.amount_paid or 0) for b in bookings)
+            if trip.submitted_amount is not None:
+                trip_sum = float(trip.submitted_amount)
+            else:
+                trip_sum = sum(float(b.amount_paid or 0) for b in bookings)
+
             total_daily_sum += trip_sum
+
+            dep_aware = trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time
+            dep_kyiv = dep_aware.astimezone(KYIV_TZ)
 
             summary_list.append({
                 "trip_id": trip.id,
                 "route": f"{from_name} → {to_name}",
-                "time": trip.departure_time.replace(tzinfo=ZoneInfo("UTC")).astimezone(KYIV_TZ).strftime("%H:%M"),
+                "time": dep_kyiv.strftime("%H:%M"),
+                "status": trip.status.name,
+                "submitted_cash": float(trip.submitted_cash) if trip.submitted_cash is not None else None,
+                "submitted_card": float(trip.submitted_card) if trip.submitted_card is not None else None,
                 "seated": seated,
                 "standing": standing,
                 "parcels": parcels,
@@ -333,4 +349,101 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
             "date": filter_date.strftime("%d.%m.%Y"),
             "total_sum": total_daily_sum,
             "trips": summary_list
+        }
+
+
+# === ОПУБЛІКОВАНИЙ ГРАФІК ВОДІЯ (ДЛЯ TELEGRAM MINI APP) ===
+@router.get("/driver/{telegram_id}/published-schedule")
+async def get_driver_published_schedule(telegram_id: int, date_from: str = None, date_to: str = None):
+    async with async_session_maker() as session:
+        user_stmt = select(User).where(User.telegram_id == telegram_id, User.role == UserRole.DRIVER)
+        driver = (await session.execute(user_stmt)).scalar_one_or_none()
+        if not driver:
+            raise HTTPException(status_code=403, detail="Доступ заборонено")
+
+        now_kyiv = datetime.now(KYIV_TZ)
+        if date_from and date_to:
+            try:
+                d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
+                d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+            except ValueError:
+                d_from = now_kyiv.date()
+                d_to = now_kyiv.date()
+        else:
+            d_from = now_kyiv.date()
+            d_to = now_kyiv.date()
+
+        audit_stmt = (
+            select(AuditLog)
+            .where(AuditLog.action == "DRIVER_SCHEDULE_PUBLISHED")
+            .order_by(AuditLog.created_at.desc())
+        )
+        audit_res = await session.execute(audit_stmt)
+        last_pub = audit_res.scalars().first()
+
+        pub_comment = last_pub.message if last_pub else None
+
+        FromLoc = aliased(Location)
+        ToLoc = aliased(Location)
+
+        start_dt = datetime.combine(d_from, time.min, tzinfo=KYIV_TZ)
+        end_dt = datetime.combine(d_to, time.max, tzinfo=KYIV_TZ)
+
+        trips_stmt = (
+            select(Trip, FromLoc.name, ToLoc.name)
+            .options(selectinload(Trip.vehicle))
+            .join(FromLoc, Trip.from_location_id == FromLoc.id)
+            .join(ToLoc, Trip.to_location_id == ToLoc.id)
+            .where(Trip.driver_id == driver.id)
+            .where(Trip.departure_time >= start_dt)
+            .where(Trip.departure_time <= end_dt)
+            .where(Trip.status != TripStatus.CANCELLED)
+            .order_by(Trip.departure_time)
+        )
+        trips_rows = (await session.execute(trips_stmt)).all()
+
+        schedule_trips = []
+        total_seats = 0
+        total_revenue = 0.0
+
+        for trip, from_name, to_name in trips_rows:
+            dep_aware = trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time
+            dep_kyiv = dep_aware.astimezone(KYIV_TZ)
+            
+            total_seats += trip.seats_limit_snapshot
+            
+            b_stmt = select(func.sum(Booking.passengers_count), func.sum(Booking.amount_paid)).where(
+                Booking.trip_id == trip.id,
+                Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED])
+            )
+            b_res = await session.execute(b_stmt)
+            b_row = b_res.first()
+            booked_count = b_row[0] if b_row and b_row[0] else 0
+            rev = float(b_row[1]) if b_row and b_row[1] else 0.0
+            total_revenue += rev
+
+            schedule_trips.append({
+                "trip_id": trip.id,
+                "date": dep_kyiv.strftime("%Y-%m-%d"),
+                "date_formatted": dep_kyiv.strftime("%d.%m.%Y"),
+                "time": dep_kyiv.strftime("%H:%M"),
+                "route": f"{from_name} → {to_name}",
+                "from_location": from_name,
+                "to_location": to_name,
+                "status": trip.status.name,
+                "seats_limit": trip.seats_limit_snapshot,
+                "booked_seats": booked_count,
+                "vehicle_model": trip.vehicle.model if trip.vehicle else "Автобус",
+                "vehicle_plate": trip.vehicle.plate_number if trip.vehicle else "—",
+            })
+
+        return {
+            "driver_name": driver.full_name,
+            "date_from": d_from.strftime("%d.%m.%Y"),
+            "date_to": d_to.strftime("%d.%m.%Y"),
+            "trips_count": len(schedule_trips),
+            "total_seats": total_seats,
+            "total_revenue": total_revenue,
+            "comment": pub_comment,
+            "trips": schedule_trips
         }

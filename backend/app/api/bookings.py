@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from app.db.database import async_session_maker
 from app.db.models import Trip, Booking, User, BookingType, BookingSource, BookingStatus, Location
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, StandingBookingCreate, ParcelBookingCreate
+from app.services.admin_use_cases import refresh_user_stats
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -160,6 +161,8 @@ async def cancel_booking(booking_id: int, telegram_id: int):
 
         # Скасовуємо
         booking.status = BookingStatus.CANCELLED
+        if booking.passenger_id:
+            await refresh_user_stats(session, booking.passenger_id)
         await session.commit()
         
         return {"message": "Бронювання успішно скасовано"}
@@ -177,6 +180,16 @@ async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
         if not booking:
             raise HTTPException(status_code=404, detail="Квиток не знайдено")
 
+        # Перевіряємо статус рейсу: якщо COMPLETED або CLOSED - редагування заборонено
+        trip = await session.get(Trip, booking.trip_id)
+        if trip:
+            t_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
+            if t_status.upper() in ["COMPLETED", "CLOSED"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Зміна посадки неможлива: рейс вже завершений або закритий фінансово."
+                )
+
         # Оновлюємо статус (Додано RESERVED для скасування випадкової посадки)
         if payload.status == "BOARDED":
             booking.status = BookingStatus.BOARDED
@@ -186,6 +199,9 @@ async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
             booking.status = BookingStatus.RESERVED
         else:
             raise HTTPException(status_code=400, detail="Недійсний статус")
+
+        if booking.passenger_id:
+            await refresh_user_stats(session, booking.passenger_id)
 
         await session.commit()
         return {"message": f"Статус квитка оновлено на {payload.status}"}
@@ -327,6 +343,10 @@ async def cancel_quick_sale(booking_id: int, telegram_id: int):
         booking_type_str = booking.booking_type.name if hasattr(booking.booking_type, 'name') else str(booking.booking_type)
         if booking_type_str not in ["STANDING", "PARCEL"]:
             raise HTTPException(status_code=400, detail="Можна скасовувати лише стоячих та посилки")
+
+        t_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
+        if t_status.upper() in ["COMPLETED", "CLOSED"]:
+            raise HTTPException(status_code=400, detail="Неможливо видалити запис: рейс вже завершений або закрито фінансово.")
 
         # Видаляємо запис повністю (або ставимо статус CANCELLED)
         await session.delete(booking)

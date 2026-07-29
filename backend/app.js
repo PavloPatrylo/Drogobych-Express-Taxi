@@ -71,24 +71,47 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     const navDriverTrips = document.getElementById('nav-driver-trips');
+    const navDriverSchedule = document.getElementById('nav-driver-schedule');
     const navDriverSummary = document.getElementById('nav-driver-summary');
-    const viewDriverTrips = document.getElementById('driver-trips-view');
-    const viewDriverSummary = document.getElementById('driver-summary-view');
 
-    if (navDriverTrips && navDriverSummary) {
+    const driverTripsView = document.getElementById('driver-trips-view');
+    const driverScheduleView = document.getElementById('driver-schedule-view');
+    const driverSummaryView = document.getElementById('driver-summary-view');
+
+    if (navDriverTrips && navDriverSchedule && navDriverSummary) {
         navDriverTrips.addEventListener('click', () => {
-            navDriverTrips.className = "text-yellow-600 font-bold border-b-2 border-yellow-500 pb-2 w-1/2 mt-2";
-            navDriverSummary.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/2 mt-2";
-            viewDriverTrips.classList.remove('hidden');
-            viewDriverSummary.classList.add('hidden');
+            navDriverTrips.className = "text-yellow-600 font-bold border-b-2 border-yellow-500 pb-2 w-1/3 mt-2";
+            navDriverSchedule.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+            navDriverSummary.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+
+            if (driverTripsView) driverTripsView.classList.remove('hidden');
+            if (driverScheduleView) driverScheduleView.classList.add('hidden');
+            if (driverSummaryView) driverSummaryView.classList.add('hidden');
+
             fetchDriverManifest();
         });
 
+        navDriverSchedule.addEventListener('click', () => {
+            navDriverTrips.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+            navDriverSchedule.className = "text-yellow-600 font-bold border-b-2 border-yellow-500 pb-2 w-1/3 mt-2";
+            navDriverSummary.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+
+            if (driverTripsView) driverTripsView.classList.add('hidden');
+            if (driverScheduleView) driverScheduleView.classList.remove('hidden');
+            if (driverSummaryView) driverSummaryView.classList.add('hidden');
+
+            fetchDriverSchedule();
+        });
+
         navDriverSummary.addEventListener('click', () => {
-            navDriverSummary.className = "text-yellow-600 font-bold border-b-2 border-yellow-500 pb-2 w-1/2 mt-2";
-            navDriverTrips.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/2 mt-2";
-            viewDriverSummary.classList.remove('hidden');
-            viewDriverTrips.classList.add('hidden');
+            navDriverTrips.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+            navDriverSchedule.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+            navDriverSummary.className = "text-yellow-600 font-bold border-b-2 border-yellow-500 pb-2 w-1/3 mt-2";
+
+            if (driverTripsView) driverTripsView.classList.add('hidden');
+            if (driverScheduleView) driverScheduleView.classList.add('hidden');
+            if (driverSummaryView) driverSummaryView.classList.remove('hidden');
+
             fetchDriverSummary();
         });
     }
@@ -111,12 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (userData.role === 'DRIVER' || userData.role === 'driver') {
                 roleEl.textContent = 'Водій 🚕';
                 roleEl.className = 'text-yellow-800 text-sm font-bold';
-                // Перевіряємо, чи є PDF в базі (припустимо, у тебе буде поле userData.schedule_pdf_url)
-                if (userData.schedule_pdf_url) {
-                    tripsEl.innerHTML = `<a href="${userData.schedule_pdf_url}" target="_blank" class="text-yellow-600 underline font-bold">📄 Мій графік (PDF)</a>`;
-                } else {
-                    tripsEl.textContent = `На жаль, ваш графік ще не завантажено. Зверніться до адміністрації.`;
-                }
+                tripsEl.innerHTML = `<span class="text-yellow-800 font-bold">📅 Графік опубліковано у вкладці «Графік»</span>`;
 
                 // Ховаємо пасажирський інтерфейс
                 if (passengerNav) passengerNav.classList.add('hidden');
@@ -398,26 +416,42 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             alert('❌ Помилка з\'єднання з сервером');
         }
+    };
+
+    function getKyivDateStr(offsetDays = 0) {
+        const d = new Date();
+        d.setDate(d.getDate() + offsetDays);
+        return d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
     }
 
+    let currentDriverDate = getKyivDateStr(0);
+
     // 7. Маніфест рейсів (водій)
-// === НОВЕ: ФУНКЦІЯ ДЛЯ ВОДІЯ (UC-D1 FULL SRS) ===
-async function fetchDriverManifest() {
+    // === НОВЕ: ФУНКЦІЯ ДЛЯ ВОДІЯ (UC-D1 FULL SRS) ===
+    async function fetchDriverManifest(targetDate = null) {
+        if (targetDate) {
+            currentDriverDate = targetDate;
+        }
+
+        const datePicker = document.getElementById('driver-date-picker');
+        if (datePicker) {
+            datePicker.value = currentDriverDate;
+        }
+
         const driverManifestContainer = document.getElementById('driver-manifest-container');
-        
-        // ❌ ПРИБИРАЄМО ЦЕЙ РЯДОК, щоб сторінка не "схлопувалася" і не стрибала:
-        // driverManifestContainer.innerHTML = '<div class="text-center text-gray-400 py-4">Завантаження рейсів...</div>';
 
         try {
-            const response = await fetch(`${API_URL}/trips/driver/${telegramId}/manifest`, { headers: { 'ngrok-skip-browser-warning': 'true' }});
+            const url = `${API_URL}/trips/driver/${telegramId}/manifest?target_date=${currentDriverDate}`;
+            const response = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' }});
             if (!response.ok) throw new Error('Помилка маніфесту');
             const manifests = await response.json();
 
-            // ✅ Очищаємо контейнер ТІЛЬКИ ТОДІ, коли дані вже на руках!
             driverManifestContainer.innerHTML = '';
 
             if (manifests.length === 0) {
-                driverManifestContainer.innerHTML = '<div class="text-center text-gray-500 py-4 text-lg mt-10">На сьогодні рейсів не призначено 📭</div>';
+                driverManifestContainer.innerHTML = `<div class="text-center text-gray-500 py-6 text-sm bg-white rounded-2xl border border-gray-200 shadow-sm mt-2 font-medium">
+                    На <strong>${currentDriverDate}</strong> рейсів не призначено 📭
+                </div>`;
                 return;
             }
             manifests.forEach(manifest => {
@@ -433,6 +467,8 @@ async function fetchDriverManifest() {
                 const parcelCount = parcels.reduce((sum, p) => sum + p.seats, 0);
                 const totalPassengers = seated.reduce((sum, p) => sum + p.seats, 0) + standingCount;
 
+                const isTripLocked = String(manifest.trip_status).toUpperCase() === 'COMPLETED' || String(manifest.trip_status).toUpperCase() === 'CLOSED';
+
                 let passengersHtml = '';
                 if (seated.length === 0) {
                     passengersHtml = '<p class="text-sm text-gray-400 italic mt-2 text-center">Сидячих пасажирів поки немає</p>';
@@ -440,13 +476,22 @@ async function fetchDriverManifest() {
                     passengersHtml = '<div class="mt-3 space-y-3">';
                     seated.forEach((p, index) => {
                         let actionButton = '';
-                        if (p.status === 'RESERVED' || p.status === 'PAID') {
-                            actionButton = `<button class="w-full mt-2 bg-green-500 hover:bg-green-600 text-white font-bold py-2 rounded-lg text-sm transition-colors" onclick="confirmBoarding(${p.booking_id})">✓ Підтвердити посадку</button>`;
-                        } else if (p.status === 'BOARDED') {
-                            // Тепер це активна кнопка, яка дозволяє скасувати посадку
-                            actionButton = `<button class="w-full mt-2 bg-green-50 hover:bg-red-50 text-green-700 hover:text-red-600 border border-green-200 hover:border-red-200 font-bold py-2 rounded-lg text-sm text-center transition-colors" onclick="undoBoarding(${p.booking_id})">✓ На борту (Натисніть для відміни)</button>`;
-                        } else if (p.status === 'NOSHOW') {
-                            actionButton = `<div class="w-full mt-2 bg-red-50 text-red-500 font-bold py-2 rounded-lg text-sm text-center">❌ Неявка</div>`;
+                        if (isTripLocked) {
+                            if (p.status === 'BOARDED') {
+                                actionButton = `<div class="w-full mt-2 bg-green-50 text-green-700 font-bold py-1.5 rounded-lg text-xs text-center border border-green-200">✓ На борту (Зафіксовано)</div>`;
+                            } else if (p.status === 'NOSHOW') {
+                                actionButton = `<div class="w-full mt-2 bg-red-50 text-red-500 font-bold py-1.5 rounded-lg text-xs text-center border border-red-200">❌ Неявка</div>`;
+                            } else {
+                                actionButton = `<div class="w-full mt-2 bg-gray-100 text-gray-500 font-bold py-1.5 rounded-lg text-xs text-center">Заброньовано</div>`;
+                            }
+                        } else {
+                            if (p.status === 'RESERVED' || p.status === 'PAID') {
+                                actionButton = `<button class="w-full mt-2 bg-green-500 hover:bg-green-600 text-white font-bold py-2 rounded-lg text-sm transition-colors" onclick="confirmBoarding(${p.booking_id})">✓ Підтвердити посадку</button>`;
+                            } else if (p.status === 'BOARDED') {
+                                actionButton = `<button class="w-full mt-2 bg-green-50 hover:bg-red-50 text-green-700 hover:text-red-600 border border-green-200 hover:border-red-200 font-bold py-2 rounded-lg text-sm text-center transition-colors" onclick="undoBoarding(${p.booking_id})">✓ На борту (Натисніть для відміни)</button>`;
+                            } else if (p.status === 'NOSHOW') {
+                                actionButton = `<div class="w-full mt-2 bg-red-50 text-red-500 font-bold py-2 rounded-lg text-sm text-center">❌ Неявка</div>`;
+                            }
                         }
 
                         passengersHtml += `
@@ -467,15 +512,13 @@ async function fetchDriverManifest() {
                     });
                     passengersHtml += '</div>';
                 }
-// (Це додаємо відразу ПІСЛЯ блоку формування seated пасажирів)
-// (Це додаємо відразу ПІСЛЯ блоку формування seated пасажирів)
+
                 let fastSalesHtml = '';
                 const fastSales = manifest.passengers.filter(p => String(p.booking_type).toUpperCase() !== 'SEATED');
                 
                 if (fastSales.length > 0) {
                     fastSalesHtml = '<h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider mb-2 mt-4">Додатково:</h3><div class="space-y-2">';
                     
-                    // 1. Виводимо список пасажирів/посилок БЕЗ індивідуальних кнопок видалення
                     fastSales.forEach(p => {
                         const icon = String(p.booking_type).toUpperCase() === 'STANDING' ? '🧍' : '📦';
                         fastSalesHtml += `
@@ -486,67 +529,70 @@ async function fetchDriverManifest() {
                     });
                     fastSalesHtml += '</div>';
 
-                    // 2. Додаємо загальні кнопки скасування (вони видаляють ОСТАННІЙ доданий запис)
-                    const standingSales = fastSales.filter(p => String(p.booking_type).toUpperCase() === 'STANDING');
-                    const parcelSales = fastSales.filter(p => String(p.booking_type).toUpperCase() === 'PARCEL');
+                    if (!isTripLocked) {
+                        const standingSales = fastSales.filter(p => String(p.booking_type).toUpperCase() === 'STANDING');
+                        const parcelSales = manifest.passengers.filter(p => String(p.booking_type).toUpperCase() === 'PARCEL');
 
-                    if (standingSales.length > 0 || parcelSales.length > 0) {
-                        fastSalesHtml += '<div class="flex gap-2 mt-3">';
-                        
-                        if (standingSales.length > 0) {
-                            // Беремо ID останнього доданого стоячого
-                            const lastStandingId = standingSales[standingSales.length - 1].booking_id;
-                            fastSalesHtml += `<button class="flex-1 bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2 rounded-xl text-xs transition-colors border border-red-200" onclick="cancelQuickSale(${lastStandingId})">➖ Скасувати стоячого</button>`;
+                        if (standingSales.length > 0 || parcelSales.length > 0) {
+                            fastSalesHtml += '<div class="flex gap-2 mt-3">';
+                            
+                            if (standingSales.length > 0) {
+                                const lastStandingId = standingSales[standingSales.length - 1].booking_id;
+                                fastSalesHtml += `<button class="flex-1 bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2 rounded-xl text-xs transition-colors border border-red-200" onclick="cancelQuickSale(${lastStandingId})">➖ Скасувати стоячого</button>`;
+                            }
+                            
+                            if (parcelSales.length > 0) {
+                                const lastParcelId = parcelSales[parcelSales.length - 1].booking_id;
+                                fastSalesHtml += `<button class="flex-1 bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2 rounded-xl text-xs transition-colors border border-red-200" onclick="cancelQuickSale(${lastParcelId})">➖ Скасувати посилку</button>`;
+                            }
+                            
+                            fastSalesHtml += '</div>';
                         }
-                        
-                        if (parcelSales.length > 0) {
-                            // Беремо ID останньої доданої посилки
-                            const lastParcelId = parcelSales[parcelSales.length - 1].booking_id;
-                            fastSalesHtml += `<button class="flex-1 bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2 rounded-xl text-xs transition-colors border border-red-200" onclick="cancelQuickSale(${lastParcelId})">➖ Скасувати посилку</button>`;
-                        }
-                        
-                        fastSalesHtml += '</div>';
                     }
                 }
                 
-                // Вкінці, де ти збираєш cardHtml, додай ${fastSalesHtml} після ${passengersHtml} всередині контейнера passengers-list.
-                // === ДИНАМІЧНА КНОПКА СТАТУСУ РЕЙСУ (UC-D2) ===
                 let tripStatusBadge = '';
                 let mainActionBtn = '';
                 
-                if (manifest.trip_status === 'SCHEDULED' || manifest.trip_status === 'scheduled') {
+                const statusUpper = String(manifest.trip_status).toUpperCase();
+                if (statusUpper === 'SCHEDULED') {
                     tripStatusBadge = `<span class="bg-blue-100 text-blue-800 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider">ОЧІКУЄТЬСЯ</span>`;
                     mainActionBtn = `<button class="w-full mt-2 bg-black text-white font-bold py-3 rounded-xl text-sm transition-colors" onclick="changeTripStatus(${manifest.trip_id}, 'BOARDING')">▶ Розпочати посадку</button>`;
-                } else if (manifest.trip_status === 'BOARDING' || manifest.trip_status === 'boarding') {
+                } else if (statusUpper === 'BOARDING') {
                     tripStatusBadge = `<span class="bg-yellow-100 text-yellow-800 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider">ПОСАДКА</span>`;
                     mainActionBtn = `<button class="w-full mt-2 bg-black text-white font-bold py-3 rounded-xl text-sm transition-colors" onclick="changeTripStatus(${manifest.trip_id}, 'ACTIVE')">▶ Вирушити (В дорогу)</button>`;
-                } else if (manifest.trip_status === 'ACTIVE' || manifest.trip_status === 'active') {
+                } else if (statusUpper === 'ACTIVE') {
                     tripStatusBadge = `<span class="bg-green-100 text-green-800 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider">В ДОРОЗІ</span>`;
                     mainActionBtn = `<button class="w-full mt-2 bg-black text-white font-bold py-3 rounded-xl text-sm transition-colors" onclick="changeTripStatus(${manifest.trip_id}, 'COMPLETED')">🏁 Завершити рейс</button>`;
+                } else if (statusUpper === 'COMPLETED') {
+                    tripStatusBadge = `<span class="bg-green-100 text-green-800 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider">🏁 ЗАВЕРШЕНО</span>`;
+                    mainActionBtn = `<div class="w-full mt-2 bg-green-50 text-green-800 border border-green-200 font-bold py-2.5 rounded-xl text-xs text-center">🏁 Рейс завершено. Очікує закриття Диспетчером.</div>`;
+                } else if (statusUpper === 'CLOSED') {
+                    tripStatusBadge = `<span class="bg-purple-100 text-purple-800 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider">🔒 ЗАКРИТО</span>`;
+                    mainActionBtn = `<div class="w-full mt-2 bg-purple-50 text-purple-800 border border-purple-200 font-bold py-2.5 rounded-xl text-xs text-center">🔒 Рейс закрито Диспетчером. Редагування заблоковано.</div>`;
                 }
 
-// ПЕРЕВІР, ЧИ Є ТУТ onclick:
-                let quickActionsHtml = `
-                    <div class="mt-4">
-                        <button class="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 rounded-xl text-sm transition-colors mb-2 disabled:opacity-40 disabled:cursor-not-allowed" 
-                            onclick="addSeatedPassenger(${manifest.trip_id})" ${manifest.available_seats === 0 ? 'disabled' : ''}>
-                            💺 + Сидячий пасажир
-                        </button>
-                        <div class="flex gap-2">
-                            <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed" 
-                                onclick="addStandingPassenger(${manifest.trip_id})" ${manifest.available_seats > 0 ? 'disabled' : ''}>
-                                🧍 + Стоячий
+                let quickActionsHtml = '';
+                if (!isTripLocked) {
+                    quickActionsHtml = `
+                        <div class="mt-4">
+                            <button class="w-full bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-3 rounded-xl text-sm transition-colors mb-2 disabled:opacity-40 disabled:cursor-not-allowed" 
+                                onclick="addSeatedPassenger(${manifest.trip_id})" ${manifest.available_seats === 0 ? 'disabled' : ''}>
+                                💺 + Сидячий пасажир
                             </button>
-                            <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors" 
-                                onclick="addParcel(${manifest.trip_id})">
-                                📦 Посилка
-                            </button>
+                            <div class="flex gap-2">
+                                <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed" 
+                                    onclick="addStandingPassenger(${manifest.trip_id})" ${manifest.available_seats > 0 ? 'disabled' : ''}>
+                                    🧍 + Стоячий
+                                </button>
+                                <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 rounded-xl text-sm transition-colors" 
+                                    onclick="addParcel(${manifest.trip_id})">
+                                    📦 Посилка
+                                </button>
+                            </div>
                         </div>
-                    </div>
-                    <div class="mt-4">
-                        ${mainActionBtn}
-                    </div>
-                `;
+                    `;
+                }
 
                 const statsHtml = `
                     <div class="flex justify-between bg-yellow-50 p-2 rounded-lg text-xs font-bold text-yellow-800 mb-3 border border-yellow-200">
@@ -555,7 +601,6 @@ async function fetchDriverManifest() {
                     </div>
                 `;
 
-// === ПЕРЕВІРЯЄМО СТАН РОЗГОРТАННЯ ===
                 const isExpanded = expandedTrips.has(manifest.trip_id);
                 const listVisibilityClass = isExpanded ? "transition-all duration-300" : "hidden transition-all duration-300";
                 const toggleIcon = isExpanded ? "▲" : "▼";
@@ -587,6 +632,9 @@ async function fetchDriverManifest() {
                         
                         <hr class="my-4 border-gray-100">
                         ${quickActionsHtml}
+                        <div class="mt-2">
+                            ${mainActionBtn}
+                        </div>
                     </div>`;
                     
                 driverManifestContainer.innerHTML += cardHtml;
@@ -772,17 +820,36 @@ async function fetchDriverManifest() {
                         </div>`;
 
             data.trips.forEach(trip => {
+                let badge = '<span class="bg-green-100 text-green-800 text-[10px] font-bold px-2 py-0.5 rounded-full">Завершено</span>';
+                if (trip.status === 'CLOSED') {
+                    badge = '<span class="bg-purple-100 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-full">🔒 Фінансово закрито</span>';
+                }
+
+                let breakdownHtml = '';
+                if (trip.submitted_cash !== null || trip.submitted_card !== null) {
+                    breakdownHtml = `
+                        <div class="mt-2 pt-2 border-t border-gray-100 text-[11px] font-bold flex justify-between text-gray-600">
+                            <span>💵 Готівка: <span class="text-green-700">${trip.submitted_cash ?? 0} ₴</span></span>
+                            <span>💳 Картка: <span class="text-blue-700">${trip.submitted_card ?? 0} ₴</span></span>
+                        </div>
+                    `;
+                }
+
                 html += `
                     <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-3">
-                        <div class="flex justify-between font-bold border-b pb-2 mb-2">
-                            <span>${trip.time} | ${trip.route}</span>
-                            <span class="text-green-600">+${trip.trip_sum} ₴</span>
+                        <div class="flex justify-between font-bold border-b pb-2 mb-2 items-center">
+                            <div>
+                                <span class="text-gray-900 font-black text-sm">${trip.time}</span> | <span class="text-gray-700 text-xs">${trip.route}</span>
+                                <div class="mt-0.5">${badge}</div>
+                            </div>
+                            <span class="text-green-600 font-black text-base">+${trip.trip_sum} ₴</span>
                         </div>
                         <div class="text-xs font-bold text-gray-500 grid grid-cols-3 gap-2 text-center">
                             <div class="bg-gray-50 p-2 rounded-lg">💺 Сидячих<br><span class="text-black text-sm">${trip.seated}</span></div>
                             <div class="bg-gray-50 p-2 rounded-lg">🧍 Стоячих<br><span class="text-black text-sm">${trip.standing}</span></div>
                             <div class="bg-gray-50 p-2 rounded-lg">📦 Посилок<br><span class="text-black text-sm">${trip.parcels}</span></div>
                         </div>
+                        ${breakdownHtml}
                     </div>
                 `;
             });
@@ -792,6 +859,144 @@ async function fetchDriverManifest() {
             container.innerHTML = '<div class="text-center text-red-500 py-4">Помилка завантаження звіту</div>';
         }
     }
+
+    async function fetchDriverSchedule() {
+        const container = document.getElementById('driver-schedule-container');
+        if (!container) return;
+        
+        container.innerHTML = '<div class="text-center text-gray-400 py-8 font-bold text-xs">⏳ Завантаження опублікованого графіку...</div>';
+
+        try {
+            const todayStr = getKyivDateStr(0);
+            const dateToObj = new Date();
+            dateToObj.setDate(dateToObj.getDate() + 6);
+            const dateToStr = dateToObj.toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
+
+            const response = await fetch(`${API_URL}/trips/driver/${telegramId}/published-schedule?date_from=${todayStr}&date_to=${dateToStr}`, {
+                headers: { 'ngrok-skip-browser-warning': 'true' }
+            });
+
+            if (!response.ok) throw new Error();
+            const data = await response.json();
+
+            if (!data.trips || data.trips.length === 0) {
+                container.innerHTML = `
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-200 text-center space-y-3">
+                        <div class="text-4xl">📅</div>
+                        <h3 class="font-black text-gray-800 text-sm">Опублікований графік відсутній</h3>
+                        <p class="text-xs text-gray-500 font-medium">Наразі Диспетчер ще не опублікував графік рейсів на цей період. Зверніться до адміністрації.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = `
+                <div class="bg-yellow-400 text-slate-950 p-4 rounded-2xl shadow-sm mb-4 border border-yellow-500 space-y-2">
+                    <div class="flex justify-between items-center border-b border-black/10 pb-2">
+                        <span class="text-xs font-black uppercase tracking-wider">👨‍✈️ Графік Водія: ${data.driver_name}</span>
+                        <span class="bg-black text-yellow-400 text-[10px] font-bold px-2 py-0.5 rounded-full">${data.trips_count} рейсів</span>
+                    </div>
+                    <div class="text-xs font-bold flex justify-between pt-1">
+                        <span>Період: ${data.date_from} — ${data.date_to}</span>
+                        <span>Місць: ${data.total_seats}</span>
+                    </div>
+                </div>
+            `;
+
+            if (data.comment) {
+                html += `
+                    <div class="bg-blue-50 text-blue-900 border border-blue-200 p-3 rounded-xl mb-4 text-xs font-medium flex items-center gap-2">
+                        <span>ℹ️ <strong>Примітка Диспетчера:</strong> ${data.comment}</span>
+                    </div>
+                `;
+            }
+
+            // РЕНДЕРИМО СТИЛЬНУ ТАБЛИЦЮ РЕЙСІВ
+            html += `
+                <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs border-collapse">
+                            <thead class="bg-gray-100 border-b border-gray-200 font-bold uppercase text-[10px] text-gray-600">
+                                <tr>
+                                    <th class="p-3">Дата / Час</th>
+                                    <th class="p-3">Маршрут</th>
+                                    <th class="p-3">Автобус</th>
+                                    <th class="p-3 text-center">Зайнято</th>
+                                    <th class="p-3 text-center">Статус</th>
+                                    <th class="p-3 w-6"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 font-medium">
+            `;
+
+            data.trips.forEach(t => {
+                let statusBadge = '<span class="bg-yellow-100 text-yellow-800 text-[10px] font-bold px-2 py-0.5 rounded-full">Заплановано</span>';
+                if (t.status === 'ACTIVE') statusBadge = '<span class="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full">В дорозі</span>';
+                else if (t.status === 'COMPLETED' || t.status === 'CLOSED') statusBadge = '<span class="bg-green-100 text-green-800 text-[10px] font-bold px-2 py-0.5 rounded-full">Завершено</span>';
+
+                html += `
+                    <tr class="schedule-trip-card hover:bg-yellow-50 active:bg-yellow-100 cursor-pointer transition-colors" data-date="${t.date}" data-trip-id="${t.trip_id}">
+                        <td class="p-3 font-bold whitespace-nowrap">
+                            <div class="text-gray-900 font-black">${t.time}</div>
+                            <div class="text-[10px] text-gray-500 font-mono">${t.date_formatted}</div>
+                        </td>
+                        <td class="p-3 font-bold text-gray-800">${t.route}</td>
+                        <td class="p-3 font-mono text-[11px] whitespace-nowrap">
+                            <div class="font-bold text-gray-700">${t.vehicle_model}</div>
+                            <div class="text-[10px] text-gray-500">${t.vehicle_plate}</div>
+                        </td>
+                        <td class="p-3 text-center font-bold font-mono whitespace-nowrap">
+                            <span class="${t.booked_seats >= t.seats_limit ? 'text-red-600 font-black' : 'text-gray-700'}">${t.booked_seats}</span> / ${t.seats_limit}
+                        </td>
+                        <td class="p-3 text-center whitespace-nowrap">${statusBadge}</td>
+                        <td class="p-3 text-right text-yellow-600 font-bold">➔</td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+            container.innerHTML = html;
+
+            container.querySelectorAll('.schedule-trip-card').forEach(card => {
+                card.onclick = function() {
+                    const targetDate = this.getAttribute('data-date');
+                    const tripId = Number(this.getAttribute('data-trip-id'));
+                    window.openTripFromSchedule(targetDate, tripId);
+                };
+            });
+
+        } catch (err) {
+            container.innerHTML = '<div class="text-center text-red-500 py-4 font-bold text-xs">❌ Помилка завантаження графіку</div>';
+        }
+    }
+
+    window.openTripFromSchedule = function(targetDate, tripId) {
+        const navDriverTrips = document.getElementById('nav-driver-trips');
+        const navDriverSchedule = document.getElementById('nav-driver-schedule');
+        const navDriverSummary = document.getElementById('nav-driver-summary');
+
+        const driverTripsView = document.getElementById('driver-trips-view');
+        const driverScheduleView = document.getElementById('driver-schedule-view');
+        const driverSummaryView = document.getElementById('driver-summary-view');
+
+        if (navDriverTrips && navDriverSchedule && navDriverSummary) {
+            navDriverTrips.className = "text-yellow-600 font-bold border-b-2 border-yellow-500 pb-2 w-1/3 mt-2";
+            navDriverSchedule.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+            navDriverSummary.className = "text-gray-400 font-bold border-b-2 border-transparent pb-2 w-1/3 mt-2";
+
+            if (driverTripsView) driverTripsView.classList.remove('hidden');
+            if (driverScheduleView) driverScheduleView.classList.add('hidden');
+            if (driverSummaryView) driverSummaryView.classList.add('hidden');
+        }
+
+        expandedTrips.add(tripId);
+        fetchDriverManifest(targetDate);
+    };
 
         // --- ЛОГІКА МОДАЛЬНОГО ВІКНА "ІНФО" ---
     const infoBtn = document.getElementById('infoBtn');
@@ -863,6 +1068,46 @@ async function fetchDriverManifest() {
             }
         } catch (error) { alert('❌ Помилка сервера'); }
     };
+    // --- КЕРУВАННЯ НАВІГАТОРОМ ДАТ ДЛЯ ВОДІЯ ---
+    const driverPrevBtn = document.getElementById('driver-prev-day');
+    const driverTodayBtn = document.getElementById('driver-today-day');
+    const driverNextBtn = document.getElementById('driver-next-day');
+    const driverDatePicker = document.getElementById('driver-date-picker');
+
+    if (driverPrevBtn) {
+        driverPrevBtn.addEventListener('click', () => {
+            const parts = currentDriverDate.split('-');
+            const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+            d.setDate(d.getDate() - 1);
+            const prevStr = d.toLocaleDateString('sv-SE');
+            fetchDriverManifest(prevStr);
+        });
+    }
+
+    if (driverTodayBtn) {
+        driverTodayBtn.addEventListener('click', () => {
+            fetchDriverManifest(getKyivDateStr(0));
+        });
+    }
+
+    if (driverNextBtn) {
+        driverNextBtn.addEventListener('click', () => {
+            const parts = currentDriverDate.split('-');
+            const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+            d.setDate(d.getDate() + 1);
+            const nextStr = d.toLocaleDateString('sv-SE');
+            fetchDriverManifest(nextStr);
+        });
+    }
+
+    if (driverDatePicker) {
+        driverDatePicker.addEventListener('change', (e) => {
+            if (e.target.value) {
+                fetchDriverManifest(e.target.value);
+            }
+        });
+    }
+
     // --- СТАРТ ---
     fetchUserData();
 });

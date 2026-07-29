@@ -1,14 +1,13 @@
 # app/main.py
 
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# Імпортуємо наш новий роутер з папки api
+# Імпортуємо роутери
 from app.api.users import router as users_router 
 from app.api.trips import router as trips_router
 from app.api.bookings import router as bookings_router
-
-from fastapi import APIRouter
 from app.api.admin import audit, auth, broadcast, crm, finance, schedule, vehicles
 
 app = FastAPI(title="Drogobych Express Taxi API")
@@ -23,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Підключаємо роутер
+# Підключаємо роутери
 app.include_router(users_router, prefix="/api")
 app.include_router(trips_router, prefix="/api")
 app.include_router(bookings_router, prefix="/api")
@@ -38,9 +37,7 @@ admin_router.include_router(audit.router, prefix="/api/admin")
 
 app.include_router(admin_router)
 
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-
+# Клієнтський Mini App (Пасажир / Водій)
 @app.get("/")
 async def serve_index():
     """
@@ -54,6 +51,3 @@ async def serve_app_js():
     JS скрипт для клієнтського Mini App.
     """
     return FileResponse("app.js")
-
-# Монтуємо адмін-панель за шляхом /admin
-app.mount("/admin", StaticFiles(directory="admin", html=True), name="admin")

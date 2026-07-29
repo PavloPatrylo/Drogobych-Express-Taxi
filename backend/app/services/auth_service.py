@@ -1,6 +1,7 @@
 # backend/app/services/auth_service.py
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from sqlalchemy.future import select
 from datetime import datetime, timedelta
 from jose import jwt
@@ -15,7 +16,7 @@ def create_access_token(user_id: int, role: UserRole):
     return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
 
 async def authenticate_user(db: Session, phone: str, password: str):
-    # 1. Пошук користувача
+    # 1. Пошук користувача (лише за номером телефону)
     result = await db.execute(select(User).filter(User.phone == phone))
     user = result.scalars().first()
     

@@ -38,6 +38,34 @@ async def create_vehicle(
     return admin_use_cases.vehicle_to_admin(new_vehicle)
 
 
+
+@router.put("/{vehicle_id}", response_model=AdminVehicleResponse)
+async def update_vehicle(
+    vehicle_id: int,
+    vehicle_in: VehicleCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_owner_access),
+):
+    existing = await db.get(Vehicle, vehicle_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+
+    if existing.plate_number != vehicle_in.plate_number:
+        dup = await db.execute(select(Vehicle).where(Vehicle.plate_number == vehicle_in.plate_number))
+        if dup.scalars().first():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Vehicle plate already exists")
+
+    existing.plate_number = vehicle_in.plate_number
+    existing.model = vehicle_in.model
+    existing.total_seats = vehicle_in.total_seats
+    existing.total_standing = vehicle_in.total_standing
+    existing.is_active = vehicle_in.is_active
+
+    await db.commit()
+    await db.refresh(existing)
+    return admin_use_cases.vehicle_to_admin(existing)
+
+
 @router.patch("/{vehicle_id}/toggle-active")
 async def toggle_vehicle_status(
     vehicle_id: int,

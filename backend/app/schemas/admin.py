@@ -20,16 +20,21 @@ class VehicleResponse(VehicleBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
+class LocationResponse(BaseModel):
+    id: int
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
 # ══════════════════════════════════════════════
 # СХЕМИ ДЛЯ ПЕРСОНАЛУ ТА КЛІЄНТІВ (USERS)
 # ══════════════════════════════════════════════
 class UserResponse(BaseModel):
     id: int
-    full_name: Optional[str]
-    phone: Optional[str]
-    telegram_id: Optional[int]
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    telegram_id: Optional[int] = None
     role: UserRole
-    is_active: bool
+    is_active: bool = True
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -41,8 +46,6 @@ class ScheduleTemplateBase(BaseModel):
     from_location_id: int
     to_location_id: int
     departure_time: str
-    price_seated: float
-    price_standing: float
 
 class ScheduleTemplateCreate(ScheduleTemplateBase):
     pass
@@ -63,6 +66,7 @@ class TripBase(BaseModel):
     arrival_time: Optional[datetime] = None
     price_seated: float
     price_standing: float
+    price_parcel: float = 100.0
 
 class TripCreate(TripBase):
     pass
@@ -75,7 +79,6 @@ class TripResponse(TripBase):
     submitted_amount: Optional[float] = None
     closed_by_id: Optional[int] = None
     
-    # Можемо вкласти інформацію про авто та водія, щоб фронтенду було зручно
     vehicle: Optional[VehicleResponse] = None
     driver: Optional[UserResponse] = None
     
@@ -84,13 +87,12 @@ class TripResponse(TripBase):
 class BookingResponse(BaseModel):
     id: int
     trip_id: int
-    passenger_id: Optional[int]
+    passenger_id: Optional[int] = None
     status: BookingStatus
     booking_type: BookingType
     source: BookingSource
     passengers_count: int
     amount_paid: float
-    # Важливо: дані про пасажира (щоб фронтенд не робив зайвих запитів)
     passenger_name: Optional[str] = None 
     passenger_phone: Optional[str] = None
     
@@ -137,9 +139,17 @@ class AdminTripResponse(BaseModel):
     standing_limit_snapshot: int
     price_seated: float
     price_standing: float
+    price_parcel: float = 100.0
     submitted_amount: Optional[float] = None
+    submitted_cash: Optional[float] = None
+    submitted_card: Optional[float] = None
     closed_by_id: Optional[int] = None
     closed_by: Optional[str] = None
+    close_comment: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    vehicle_plate: Optional[str] = None
+    vehicle_model: Optional[str] = None
 
 
 class AdminBookingResponse(BaseModel):
@@ -158,12 +168,51 @@ class AdminBookingResponse(BaseModel):
     passenger_phone: Optional[str] = None
 
 
+class TripManifestDetailResponse(BaseModel):
+    trip: AdminTripResponse
+    seated_count: int
+    seated_limit: int
+    standing_count: int
+    standing_limit: int
+    parcels_count: int
+    total_revenue: float
+    bookings: List[AdminBookingResponse]
+
+
+class AdminManifestBookingCreate(BaseModel):
+    booking_type: BookingType = BookingType.SEATED
+    source: BookingSource = BookingSource.PHONE
+    phone: str
+    full_name: Optional[str] = None
+    seats: int = Field(1, gt=0)
+    comment: Optional[str] = None
+
+
+class AdminBookingStatusUpdate(BaseModel):
+    status: BookingStatus
+
+
 class AdminDashboardResponse(BaseModel):
     trips: List[AdminTripResponse]
     bookings: List[AdminBookingResponse]
     passengers: List[AdminUserResponse]
     vehicles: List[AdminVehicleResponse]
     drivers: List[AdminUserResponse]
+
+
+class SystemConfigResponse(BaseModel):
+    id: int = 1
+    price_seated: float
+    price_standing: float
+    price_parcel: float
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SystemConfigUpdate(BaseModel):
+    price_seated: float = Field(..., gt=0)
+    price_standing: float = Field(..., gt=0)
+    price_parcel: float = Field(..., gt=0)
 
 
 class AdminTripCreate(BaseModel):
@@ -173,19 +222,30 @@ class AdminTripCreate(BaseModel):
     date: str
     departure_time: str
     arrival_time: Optional[str] = None
-    price_seated: float = 120
-    price_standing: float = 80
+    price_seated: Optional[float] = None
+    price_standing: Optional[float] = None
+    price_parcel: Optional[float] = None
 
     @model_validator(mode="after")
-    def departure_must_be_in_future(self):
+    def departure_must_be_valid(self):
         try:
-            departure = datetime.fromisoformat(f"{self.date}T{self.departure_time}")
+            datetime.fromisoformat(f"{self.date}T{self.departure_time}")
         except ValueError as exc:
             raise ValueError("date must be YYYY-MM-DD and departure_time must be HH:MM") from exc
-
-        if departure <= datetime.now():
-            raise ValueError("departure_time must be in the future")
         return self
+
+
+class AdminBatchTripItem(BaseModel):
+    driver_id: int
+    vehicle_id: int
+    route: str
+    date: str
+    departure_time: str
+    arrival_time: Optional[str] = None
+
+
+class AdminBatchTripCreate(BaseModel):
+    trips: List[AdminBatchTripItem]
 
 
 class AdminTripUpdate(BaseModel):
@@ -197,11 +257,12 @@ class AdminTripUpdate(BaseModel):
     arrival_time: Optional[str] = None
     price_seated: float
     price_standing: float
+    price_parcel: Optional[float] = None
 
     @model_validator(mode="after")
     def departure_must_be_valid(self):
         try:
-            departure = datetime.fromisoformat(f"{self.date}T{self.departure_time}")
+            datetime.fromisoformat(f"{self.date}T{self.departure_time}")
         except ValueError as exc:
             raise ValueError("date must be YYYY-MM-DD and departure_time must be HH:MM") from exc
         return self
@@ -211,8 +272,16 @@ class AdminTripStatusUpdate(BaseModel):
     status: TripStatus
 
 
+class AdminTripAssignUpdate(BaseModel):
+    driver_id: Optional[int] = None
+    vehicle_id: Optional[int] = None
+
+
 class AdminCloseTripRequest(BaseModel):
+    submitted_cash: Optional[float] = 0.0
+    submitted_card: Optional[float] = 0.0
     submitted_amount: Optional[float] = None
+    comment: Optional[str] = None
 
 
 class AdminOfflineBookingCreate(BaseModel):
@@ -242,3 +311,33 @@ class AdminAuditLogResponse(BaseModel):
     source: str
     by: str = "System"
     message: Optional[str] = None
+
+
+class StaffCreate(BaseModel):
+    full_name: str
+    phone: str
+    role: UserRole
+    password: str
+
+
+class StaffUpdate(BaseModel):
+    full_name: str
+    phone: str
+    role: UserRole
+    password: Optional[str] = None
+
+
+class PublishScheduleRequest(BaseModel):
+    date_from: str
+    date_to: str
+    driver_id: Optional[int] = None
+    comment: Optional[str] = None
+
+
+class PublishSchedulePreviewResponse(BaseModel):
+    trips_count: int
+    drivers_count: int
+    total_seats_limit: int
+    total_revenue: float
+    date_from: str
+    date_to: str
