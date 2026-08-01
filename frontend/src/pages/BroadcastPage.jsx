@@ -21,7 +21,9 @@ export default function BroadcastPage() {
   // General Broadcast State
   const [targetGroup, setTargetGroup] = useState('all');
   const [message, setMessage] = useState('');
-  const [generalSentSuccess, setGeneralSentSuccess] = useState(false);
+  const [generalSentSuccess, setGeneralSentSuccess] = useState(null);
+  const [generalRecipientsCount, setGeneralRecipientsCount] = useState(null);
+  const [isSendingGeneral, setIsSendingGeneral] = useState(false);
 
   // Driver Schedule Publish State
   const [schedulePreset, setSchedulePreset] = useState('week'); // 'today', 'tomorrow', 'week', 'custom'
@@ -43,10 +45,27 @@ export default function BroadcastPage() {
   };
 
   useEffect(() => {
-    // Initial dates based on preset
     updateDatesByPreset('week');
     loadDrivers();
   }, []);
+
+  const fetchGeneralPreview = async (group) => {
+    try {
+      const res = await api.post('/broadcast/preview', {
+        target_group: group,
+        text: 'preview',
+      });
+      setGeneralRecipientsCount(res.recipients_count);
+    } catch (err) {
+      console.error('Failed to fetch general preview:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'general') {
+      fetchGeneralPreview(targetGroup);
+    }
+  }, [activeTab, targetGroup]);
 
   const loadDrivers = async () => {
     try {
@@ -98,14 +117,29 @@ export default function BroadcastPage() {
     }
   }, [dateFrom, dateTo, selectedDriverId]);
 
-  const handleGeneralSend = (e) => {
+  const handleGeneralSend = async (e) => {
     e.preventDefault();
-    if (!message) return;
-    setGeneralSentSuccess(true);
-    setTimeout(() => {
+    if (!message.trim()) {
+      alert('Будь ласка, введіть текст повідомлення');
+      return;
+    }
+    setIsSendingGeneral(true);
+    setGeneralSentSuccess(null);
+    try {
+      const res = await api.post('/broadcast/send', {
+        target_group: targetGroup,
+        text: message,
+      });
+      setGeneralSentSuccess(res.recipients_count ?? 0);
       setMessage('');
-      setGeneralSentSuccess(false);
-    }, 3000);
+      setTimeout(() => {
+        setGeneralSentSuccess(null);
+      }, 6000);
+    } catch (err) {
+      alert(`Помилка надсилання оголошення: ${err.message}`);
+    } finally {
+      setIsSendingGeneral(false);
+    }
   };
 
   const handlePublishScheduleSubmit = async (e) => {
@@ -358,18 +392,25 @@ export default function BroadcastPage() {
       {/* TAB 2: GENERAL ANNOUNCEMENT BROADCAST */}
       {activeTab === 'general' && (
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6 animate-fade-in">
-          {generalSentSuccess && (
-            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-3 text-emerald-400 text-sm">
-              <CheckCircle2 size={18} />
-              <span>Сповіщення успішно надіслано в чергу відправки!</span>
+          {generalSentSuccess !== null && (
+            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center gap-3 text-emerald-400 text-sm font-medium animate-fade-in">
+              <CheckCircle2 size={20} className="shrink-0 text-emerald-400" />
+              <span>Оголошення успішно надіслано в чергу для {generalSentSuccess} осіб у Telegram!</span>
             </div>
           )}
 
-          <form onSubmit={handleGeneralSend} className="space-y-5">
+          <form onSubmit={handleGeneralSend} className="space-y-6">
             <div>
-              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                Аудиторія отримувачів
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Аудиторія отримувачів
+                </label>
+                {generalRecipientsCount !== null && (
+                  <span className="text-xs font-mono font-bold text-sky-400 bg-sky-500/10 px-2.5 py-0.5 rounded-full border border-sky-500/20">
+                    Отримають {generalRecipientsCount} осіб у Telegram
+                  </span>
+                )}
+              </div>
               <select
                 value={targetGroup}
                 onChange={(e) => setTargetGroup(e.target.value)}
@@ -379,6 +420,36 @@ export default function BroadcastPage() {
                 <option value="today_passengers">🚕 Пасажири на сьогоднішні рейси</option>
                 <option value="drivers">👮 Усі водії</option>
               </select>
+            </div>
+
+            {/* Quick Templates */}
+            <div className="space-y-2">
+              <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Швидкі шаблони оголошень
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMessage("⚠️ ШАНОВНІ ПАСАЖИРИ! Посадку на рейс перенесено на платформу №3. Будь ласка, прибудьте за 10 хвилин до відправлення.")}
+                  className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 font-medium transition-colors cursor-pointer"
+                >
+                  ⚠️ Зміна платформи посадки
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMessage("❄️ УВАГА! У зв'язку з погодними умовами та ситуацією на дорозі можлива незначна затримка рейсу на 10-15 хвилин. Перепрошуємо за незручності.")}
+                  className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 font-medium transition-colors cursor-pointer"
+                >
+                  ❄️ Погодні умови / Затримка
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMessage("🚌 ОНОВЛЕННЯ РОЗКЛАДУ! Додано нові вечірні рейси за маршрутом Дрогобич ⇄ Львів. Перегляньте актуальний розклад у боті.")}
+                  className="px-3 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300 font-medium transition-colors cursor-pointer"
+                >
+                  🚌 Оновлення розкладу рейсів
+                </button>
+              </div>
             </div>
 
             <div>
@@ -396,11 +467,11 @@ export default function BroadcastPage() {
 
             <button
               type="submit"
-              disabled={!message}
-              className="inline-flex items-center gap-2 bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 text-slate-950 font-bold px-6 py-3 rounded-xl shadow-lg shadow-yellow-500/10 transition-all text-sm cursor-pointer disabled:opacity-50"
+              disabled={isSendingGeneral || !message.trim()}
+              className="inline-flex items-center gap-2 bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 text-slate-950 font-bold px-6 py-3.5 rounded-xl shadow-lg shadow-yellow-500/10 transition-all text-xs uppercase tracking-wider cursor-pointer disabled:opacity-50"
             >
-              <Send size={18} />
-              <span>Надіслати сповіщення</span>
+              <Send size={16} />
+              <span>{isSendingGeneral ? 'Надсилання...' : '🚀 Надіслати сповіщення в Telegram'}</span>
             </button>
           </form>
         </div>

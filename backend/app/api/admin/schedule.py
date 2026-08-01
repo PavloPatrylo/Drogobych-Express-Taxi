@@ -58,7 +58,7 @@ async def get_system_config(
 async def update_system_config(
     payload: SystemConfigUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(check_owner_access),
+    current_user: User = Depends(check_admin_access),
 ):
     return await admin_use_cases.update_system_config_use_case(db, payload, current_user)
 

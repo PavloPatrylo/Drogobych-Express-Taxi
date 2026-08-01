@@ -53,18 +53,20 @@ async def get_staff(
     return await auth_service.get_staff_list(db)
 
 
+from app.api.deps import get_current_user, check_admin_access, check_owner_access
+
 @router.post("/staff", response_model=UserResponse)
 async def create_staff_member(
     payload: StaffCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(check_owner_access),
+    current_user: User = Depends(check_admin_access),
 ):
     # Check if user already exists by phone
     dup = await db.execute(select(User).where(User.phone == payload.phone))
     if dup.scalars().first():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Користувач з таким номером телефону вже існує")
 
-    hashed = hash_password(payload.password)
+    hashed = hash_password(payload.password) if payload.password else None
     new_user = User(
         full_name=payload.full_name,
         phone=payload.phone,
@@ -83,7 +85,7 @@ async def update_staff_member(
     user_id: int,
     payload: StaffUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(check_owner_access),
+    current_user: User = Depends(check_admin_access),
 ):
     existing = await db.get(User, user_id)
     if not existing:
@@ -105,24 +107,51 @@ async def update_staff_member(
     return existing
 
 
+@router.post("/staff/{user_id}/block")
+async def block_staff_member(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    existing = await db.get(User, user_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
+    existing.is_active = False
+    await db.commit()
+    return {"message": "Співробітника заблоковано", "is_active": False}
+
+
+@router.post("/staff/{user_id}/unblock")
+async def unblock_staff_member(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    existing = await db.get(User, user_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
+    existing.is_active = True
+    await db.commit()
+    return {"message": "Співробітника розблоковано", "is_active": True}
+
+
 @router.delete("/staff/{user_id}")
 async def delete_staff_member(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(check_owner_access),
+    current_user: User = Depends(check_admin_access),
 ):
     existing = await db.get(User, user_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
 
-    # Check if they are driver in active trips
     from app.db.models import Trip
     trip_stmt = select(Trip).where(Trip.driver_id == user_id)
     trip_res = await db.execute(trip_stmt)
     if trip_res.scalars().first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неможливо видалити водія, оскільки він має пов'язані рейси. Спочатку змініть водія у рейсах або видаліть ці рейси."
+            detail="Неможливо видалити водія, оскільки він має пов'язані рейси. Спочатку змініть водія у рейсах або деактивуйте його доступ."
         )
 
     try:
@@ -132,7 +161,7 @@ async def delete_staff_member(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неможливо видалити користувача через наявність зв'язаних записів в аудиті або фінансах. Рекомендуємо натомість деактивувати його (заблокувати через CRM)."
+            detail="Неможливо видалити користувача через наявність зв'язаних записів. Рекомендуємо деактивувати його доступ."
         )
 
     return {"message": "Користувача успішно видалено"}

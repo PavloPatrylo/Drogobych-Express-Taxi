@@ -25,11 +25,11 @@ async def get_vehicles(
 async def create_vehicle(
     vehicle: VehicleCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(check_owner_access),
+    current_user: User = Depends(check_admin_access),
 ):
     existing = await db.execute(select(Vehicle).where(Vehicle.plate_number == vehicle.plate_number))
     if existing.scalars().first():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Vehicle plate already exists")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Авто з таким номерним знаком вже існує")
 
     new_vehicle = Vehicle(**vehicle.model_dump())
     db.add(new_vehicle)
@@ -38,22 +38,21 @@ async def create_vehicle(
     return admin_use_cases.vehicle_to_admin(new_vehicle)
 
 
-
 @router.put("/{vehicle_id}", response_model=AdminVehicleResponse)
 async def update_vehicle(
     vehicle_id: int,
     vehicle_in: VehicleCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(check_owner_access),
+    current_user: User = Depends(check_admin_access),
 ):
     existing = await db.get(Vehicle, vehicle_id)
     if not existing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Автомобіль не знайдено")
 
     if existing.plate_number != vehicle_in.plate_number:
         dup = await db.execute(select(Vehicle).where(Vehicle.plate_number == vehicle_in.plate_number))
         if dup.scalars().first():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Vehicle plate already exists")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Авто з таким номерним знаком вже існує")
 
     existing.plate_number = vehicle_in.plate_number
     existing.model = vehicle_in.model
@@ -70,12 +69,36 @@ async def update_vehicle(
 async def toggle_vehicle_status(
     vehicle_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(check_owner_access),
+    current_user: User = Depends(check_admin_access),
 ):
     vehicle = await db.get(Vehicle, vehicle_id)
     if not vehicle:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vehicle not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Автомобіль не знайдено")
 
     vehicle.is_active = not vehicle.is_active
     await db.commit()
     return {"message": "Vehicle status changed", "is_active": vehicle.is_active}
+
+
+@router.delete("/{vehicle_id}")
+async def delete_vehicle(
+    vehicle_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    vehicle = await db.get(Vehicle, vehicle_id)
+    if not vehicle:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Автомобіль не знайдено")
+
+    from app.db.models import Trip
+    trip_stmt = select(Trip).where(Trip.vehicle_id == vehicle_id)
+    trip_res = await db.execute(trip_stmt)
+    if trip_res.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неможливо видалити автомобіль, оскільки він задіяний у рейсах. Спочатку змініть авто у рейсах або деактивуйте його статус."
+        )
+
+    await db.delete(vehicle)
+    await db.commit()
+    return {"message": "Автомобіль успішно видалено"}

@@ -77,6 +77,7 @@ class UserStats(Base):
     total_trips: Mapped[int] = mapped_column(Integer, default=0)
     total_noshows: Mapped[int] = mapped_column(Integer, default=0)
     trust_score_cached: Mapped[int] = mapped_column(Integer, default=100)
+    last_trip_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="stats")
 
@@ -155,6 +156,7 @@ class Trip(Base):
     vehicle: Mapped["Vehicle"] = relationship("Vehicle")
     driver: Mapped["User"] = relationship("User", foreign_keys=[driver_id])
     closed_by: Mapped[Optional["User"]] = relationship("User", foreign_keys=[closed_by_id])
+    bookings: Mapped[list["Booking"]] = relationship("Booking", back_populates="trip")
 
     __table_args__ = (
         Index("ix_trips_search", "from_location_id", "to_location_id", "departure_time"),
@@ -193,6 +195,9 @@ class Booking(Base):
     passengers_count: Mapped[int] = mapped_column(Integer, default=1)
     amount_paid: Mapped[float] = mapped_column(Numeric(10, 2))
     comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    trip: Mapped["Trip"] = relationship("Trip", back_populates="bookings")
+    passenger: Mapped[Optional["User"]] = relationship("User", foreign_keys=[passenger_id])
 
     __table_args__ = (
         Index("ix_bookings_trip_status", "trip_id", "status"),

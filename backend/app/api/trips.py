@@ -53,9 +53,14 @@ async def search_trips(
     Шукає рейси за напрямком та датою і вираховує кількість вільних місць.
     """
     async with async_session_maker() as session:
-        # Визначаємо початок і кінець обраної доби
-        start_of_day = datetime.combine(travel_date, time.min)
-        end_of_day = datetime.combine(travel_date, time.max)
+        # Визначаємо початок і кінець обраної доби у Київському часовому поясі
+        now_kyiv = datetime.now(KYIV_TZ)
+        start_of_day = datetime.combine(travel_date, time.min, tzinfo=KYIV_TZ)
+        end_of_day = datetime.combine(travel_date, time.max, tzinfo=KYIV_TZ)
+
+        # Якщо пасажир шукає рейси на СЬОГОДНІ — відсікаємо минулі рейси, які вже виїхали!
+        if travel_date == now_kyiv.date():
+            start_of_day = max(start_of_day, now_kyiv)
 
         # Шукаємо рейси (status = SCHEDULED або BOARDING)
         stmt = (
@@ -113,6 +118,9 @@ async def search_trips(
 # === ОТРИМАТИ МАНІФЕСТ ДЛЯ ВОДІЯ (UC-D1 - FULL) ===
 @router.get("/driver/{telegram_id}/manifest", response_model=list[TripManifest])
 async def get_driver_manifest(telegram_id: int, target_date: str = None):
+    from app.services.reminders import auto_close_expired_trips
+    await auto_close_expired_trips()
+
     async with async_session_maker() as session:
         # 1. Знаходимо водія
         user_stmt = select(User).where(User.telegram_id == telegram_id, User.role == UserRole.DRIVER)
@@ -240,24 +248,20 @@ async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatus
             for b in bookings_to_cancel:
                 b.status = BookingStatus.CANCELLED
                 
-        # 4. ЛОГІКА ВОДІЯ: Звичайний рух рейсу
+        # 4. ЛОГІКА ВОДІЯ: Звичайний або прискорений рух/закриття рейсу
         else:
             if actor.role != UserRole.DRIVER or trip.driver_id != actor.id:
                 raise HTTPException(status_code=403, detail="Це не ваш рейс або ви не водій")
 
-            valid_transitions = {
-                'SCHEDULED': 'BOARDING',
-                'BOARDING': 'ACTIVE',
-                'ACTIVE': 'COMPLETED'
-            }
+            # Дозволяємо водію переводити рейс у COMPLETED з будь-якого стану (SCHEDULED, BOARDING, ACTIVE)
+            valid_driver_statuses = ['SCHEDULED', 'BOARDING', 'ACTIVE']
 
-            if current_status not in valid_transitions or valid_transitions[current_status] != requested_status:
-                raise HTTPException(status_code=400, detail="Ця дія недоступна")
-
-            trip.status = TripStatus[requested_status] 
-
-            # АВТОМАТИЧНИЙ NO-SHOW (якщо рейс рушив, а пасажир не сів)
-            if requested_status == 'ACTIVE':
+            if requested_status == 'COMPLETED':
+                if current_status not in valid_driver_statuses:
+                    raise HTTPException(status_code=400, detail="Цей рейс вже закритий або не може бути завершений")
+                trip.status = TripStatus.COMPLETED
+                
+                # При завершенні рейсу всі невідмічені квитки отримують НЕЯВКА (NOSHOW)
                 bookings_stmt = select(Booking).where(
                     Booking.trip_id == trip.id,
                     Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID])
@@ -265,8 +269,28 @@ async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatus
                 bookings_to_noshow = (await session.execute(bookings_stmt)).scalars().all()
                 for b in bookings_to_noshow:
                     b.status = BookingStatus.NOSHOW
+            else:
+                valid_transitions = {
+                    'SCHEDULED': 'BOARDING',
+                    'BOARDING': 'ACTIVE',
+                    'ACTIVE': 'COMPLETED'
+                }
+                if current_status not in valid_transitions or valid_transitions[current_status] != requested_status:
+                    raise HTTPException(status_code=400, detail="Ця дія недоступна")
+                
+                trip.status = TripStatus[requested_status]
+
+                if requested_status == 'ACTIVE':
+                    bookings_stmt = select(Booking).where(
+                        Booking.trip_id == trip.id,
+                        Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID])
+                    )
+                    bookings_to_noshow = (await session.execute(bookings_stmt)).scalars().all()
+                    for b in bookings_to_noshow:
+                        b.status = BookingStatus.NOSHOW
 
         await session.commit()
+        await manager.broadcast("TRIP_MUTATED", {"trip_id": trip.id})
         return {"message": f"Статус рейсу змінено на {requested_status}"}
 
 # === ФІНАНСОВИЙ ЗВІТ ВОДІЯ ЗА ДЕНЬ (КИЇВСЬКИЙ ЧАС) ===
@@ -310,6 +334,8 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
 
         summary_list = []
         total_daily_sum = 0.0
+        total_cash_sum = 0.0
+        total_card_sum = 0.0
 
         for trip, from_name, to_name in trips_rows:
             bookings_stmt = select(Booking).where(
@@ -322,12 +348,15 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
             standing = sum(b.passengers_count for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'STANDING')
             parcels = sum(1 for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'PARCEL')
             
-            if trip.submitted_amount is not None:
-                trip_sum = float(trip.submitted_amount)
-            else:
-                trip_sum = sum(float(b.amount_paid or 0) for b in bookings)
+            # Розрахункова сума рейсів (Скільки водій ПОВИНЕН здати за підсумками активних квитків)
+            expected_trip_sum = sum(float(b.amount_paid or 0) for b in bookings)
 
-            total_daily_sum += trip_sum
+            c_cash = float(trip.submitted_cash) if trip.submitted_cash is not None else expected_trip_sum
+            c_card = float(trip.submitted_card) if trip.submitted_card is not None else 0.0
+
+            total_daily_sum += expected_trip_sum
+            total_cash_sum += c_cash
+            total_card_sum += c_card
 
             dep_aware = trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time
             dep_kyiv = dep_aware.astimezone(KYIV_TZ)
@@ -337,16 +366,19 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
                 "route": f"{from_name} → {to_name}",
                 "time": dep_kyiv.strftime("%H:%M"),
                 "status": trip.status.name,
-                "submitted_cash": float(trip.submitted_cash) if trip.submitted_cash is not None else None,
-                "submitted_card": float(trip.submitted_card) if trip.submitted_card is not None else None,
+                "submitted_cash": c_cash,
+                "submitted_card": c_card,
                 "seated": seated,
                 "standing": standing,
                 "parcels": parcels,
-                "trip_sum": trip_sum
+                "trip_sum": expected_trip_sum
             })
 
         return {
             "date": filter_date.strftime("%d.%m.%Y"),
+            "total_to_hand_in": total_daily_sum,
+            "total_cash": total_cash_sum,
+            "total_card": total_card_sum,
             "total_sum": total_daily_sum,
             "trips": summary_list
         }

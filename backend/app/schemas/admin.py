@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 from typing import Optional, List
 from datetime import datetime
 from app.db.models import TripStatus, BookingStatus, BookingSource, BookingType, DayType, UserRole
@@ -121,6 +121,8 @@ class AdminUserResponse(BaseModel):
     total_trips: int = 0
     total_noshows: int = 0
     trust_score: int = 100
+    registration_source: Optional[str] = "Telegram-бот"
+    last_trip_date: Optional[str] = None
     created_at: Optional[str] = None
 
 
@@ -150,6 +152,10 @@ class AdminTripResponse(BaseModel):
     driver_phone: Optional[str] = None
     vehicle_plate: Optional[str] = None
     vehicle_model: Optional[str] = None
+    booked_seats: int = 0
+    booked_standing: int = 0
+    parcels_count: int = 0
+    total_revenue: float = 0.0
 
 
 class AdminBookingResponse(BaseModel):
@@ -291,9 +297,22 @@ class AdminOfflineBookingCreate(BaseModel):
     source: BookingSource = BookingSource.PHONE
     seats: int = Field(1, gt=0)
 
+    @field_validator("phone")
+    def validate_phone_number(cls, v: str) -> str:
+        import re
+        digits = re.sub(r"\D", "", v or "")
+        if digits.startswith("380") and len(digits) == 12:
+            digits = digits[2:]
+        if len(digits) != 10:
+            raise ValueError("Номер телефону повинен містити рівно 10 цифр (наприклад: 0971234567)")
+        if not digits.startswith("0"):
+            raise ValueError("Номер телефону повинен починатися з 0 (наприклад: 0971234567)")
+        return f"+38{digits}"
+
 
 class BroadcastRequest(BaseModel):
     trip_id: Optional[int] = None
+    target_group: Optional[str] = "all"
     text: str = Field(..., min_length=1)
 
 
@@ -317,7 +336,19 @@ class StaffCreate(BaseModel):
     full_name: str
     phone: str
     role: UserRole
-    password: str
+    password: Optional[str] = None
+
+    @field_validator("phone")
+    def validate_phone_number(cls, v: str) -> str:
+        import re
+        digits = re.sub(r"\D", "", v or "")
+        if digits.startswith("380") and len(digits) == 12:
+            digits = digits[2:]
+        if len(digits) != 10:
+            raise ValueError("Номер телефону повинен містити рівно 10 цифр (наприклад: 0971234567)")
+        if not digits.startswith("0"):
+            raise ValueError("Номер телефону повинен починатися з 0 (наприклад: 0971234567)")
+        return f"+38{digits}"
 
 
 class StaffUpdate(BaseModel):
@@ -325,6 +356,18 @@ class StaffUpdate(BaseModel):
     phone: str
     role: UserRole
     password: Optional[str] = None
+
+    @field_validator("phone")
+    def validate_phone_number(cls, v: str) -> str:
+        import re
+        digits = re.sub(r"\D", "", v or "")
+        if digits.startswith("380") and len(digits) == 12:
+            digits = digits[2:]
+        if len(digits) != 10:
+            raise ValueError("Номер телефону повинен містити рівно 10 цифр (наприклад: 0971234567)")
+        if not digits.startswith("0"):
+            raise ValueError("Номер телефону повинен починатися з 0 (наприклад: 0971234567)")
+        return f"+38{digits}"
 
 
 class PublishScheduleRequest(BaseModel):
@@ -341,3 +384,11 @@ class PublishSchedulePreviewResponse(BaseModel):
     total_revenue: float
     date_from: str
     date_to: str
+
+
+class ConfirmDriverCashRequest(BaseModel):
+    driver_id: int
+    target_date: str
+    received_cash: float = 0.0
+    received_card: float = 0.0
+    comment: Optional[str] = None

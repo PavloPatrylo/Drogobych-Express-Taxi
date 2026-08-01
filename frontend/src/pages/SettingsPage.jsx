@@ -26,7 +26,19 @@ export default function SettingsPage() {
 
   // Filter State for Templates list
   const [filterDirection, setFilterDirection] = useState('all'); // 'all' | 'drohobych-lviv' | 'lviv-drohobych'
-  const [filterDayType, setFilterDayType] = useState('all'); // 'all' | 'weekday' | 'saturday' | 'sunday'
+  const [filterDayType, setFilterDayType] = useState('weekday'); // 'all' | 'weekday' | 'saturday' | 'sunday'
+
+  const handleDayTypeChange = (val) => {
+    setNewDayType(val);
+    setFilterDayType(val);
+  };
+
+  const handleFilterDayTypeChange = (val) => {
+    setFilterDayType(val);
+    if (val !== 'all') {
+      setNewDayType(val);
+    }
+  };
 
   const fetchSettingsAndTemplates = async () => {
     setIsLoading(true);
@@ -143,30 +155,15 @@ export default function SettingsPage() {
     return loc ? loc.name : `Локація #${id}`;
   };
 
-  // Filter templates list dynamically
+  // Filter templates list directly by selected day type and departure location
   const filteredTemplates = templates.filter((t) => {
-    if (filterDayType !== 'all' && t.day_type !== filterDayType) return false;
-
-    if (filterDirection !== 'all') {
-      const fromName = getLocationName(t.from_location_id).toLowerCase();
-      const toName = getLocationName(t.to_location_id).toLowerCase();
-
-      if (filterDirection === 'drohobych-lviv') {
-        const isFromDrohobych = fromName.includes('drohobych') || fromName.includes('дрогобич');
-        const isToLviv = toName.includes('lviv') || toName.includes('львів');
-        if (!isFromDrohobych || !isToLviv) return false;
-      } else if (filterDirection === 'lviv-drohobych') {
-        const isFromLviv = fromName.includes('lviv') || fromName.includes('львів');
-        const isToDrohobych = toName.includes('drohobych') || toName.includes('дрогобич');
-        if (!isFromLviv || !isToDrohobych) return false;
-      }
-    }
-
-    return true;
+    const matchDay = t.day_type === newDayType;
+    const matchFrom = !newFromLoc || Number(t.from_location_id) === Number(newFromLoc);
+    return matchDay && matchFrom;
   });
 
   return (
-    <div className="space-y-8 max-w-5xl">
+    <div className="space-y-8 w-full">
       {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -229,7 +226,7 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <form onSubmit={handleSaveTariffs} className="grid grid-cols-1 sm:grid-cols-3 gap-6 items-end">
+            <form onSubmit={handleSaveTariffs} className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
               <div>
                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
                   Сидяче місце (₴)
@@ -252,6 +249,19 @@ export default function SettingsPage() {
                   value={tariffs.price_standing}
                   onChange={(e) => setTariffs({ ...tariffs, price_standing: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-3 font-mono text-sm font-bold text-slate-200 outline-none"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                  Коробка / Посилка (₴)
+                </label>
+                <input
+                  type="number"
+                  value={tariffs.price_parcel}
+                  onChange={(e) => setTariffs({ ...tariffs, price_parcel: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-3 font-mono text-sm font-bold text-emerald-400 outline-none"
                   required
                 />
               </div>
@@ -297,8 +307,8 @@ export default function SettingsPage() {
                 </label>
                 <select
                   value={newDayType}
-                  onChange={(e) => setNewDayType(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-yellow-400 rounded-xl p-3 text-xs text-slate-200 outline-none font-medium"
+                  onChange={(e) => handleDayTypeChange(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 focus:border-yellow-400 rounded-xl p-3 text-xs text-slate-200 outline-none font-medium cursor-pointer"
                 >
                   <option value="weekday">Будній день</option>
                   <option value="saturday">Субота</option>
@@ -368,41 +378,15 @@ export default function SettingsPage() {
               </div>
             </form>
 
-            {/* Direction & Day Type Filters Bar for Templates */}
-            <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800 flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                <Filter size={16} className="text-yellow-400" />
-                <span>Фільтр перегляду шаблонів:</span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <select
-                  value={filterDirection}
-                  onChange={(e) => setFilterDirection(e.target.value)}
-                  className="bg-slate-900 border border-slate-800 text-xs rounded-xl px-3 py-2 font-medium text-slate-200 outline-none focus:border-yellow-400"
-                >
-                  <option value="all">📍 Усі напрямки</option>
-                  <option value="drohobych-lviv">Дрогобич → Львів</option>
-                  <option value="lviv-drohobych">Львів → Дрогобич</option>
-                </select>
-
-                <select
-                  value={filterDayType}
-                  onChange={(e) => setFilterDayType(e.target.value)}
-                  className="bg-slate-900 border border-slate-800 text-xs rounded-xl px-3 py-2 font-medium text-slate-200 outline-none focus:border-yellow-400"
-                >
-                  <option value="all">🗓️ Усі дні</option>
-                  <option value="weekday">Будній день</option>
-                  <option value="saturday">Субота</option>
-                  <option value="sunday">Неділя</option>
-                </select>
-              </div>
-            </div>
-
             {/* Templates Grid in Database */}
             {filteredTemplates.length === 0 ? (
-              <div className="p-8 text-center text-slate-500 bg-slate-950/40 rounded-2xl border border-slate-800 text-xs">
-                За вибраними фільтрами шаблонів не знайдено. Збережіть новий шаблон вище.
+              <div className="p-8 text-center bg-slate-950/60 rounded-2xl border border-slate-800 space-y-2">
+                <p className="font-bold text-slate-200 text-sm">
+                  На {newDayType === 'weekday' ? 'Будній день' : newDayType === 'saturday' ? 'Суботу' : 'Неділю'}{newFromLoc ? ` (${getLocationName(newFromLoc)})` : ''} шаблону ще не створено 📭
+                </p>
+                <p className="text-xs text-slate-400">
+                  Заповніть форму вище та натисніть «Зберегти новий шаблон розкладу», щоб додати перші рейси для цього напрямку.
+                </p>
               </div>
             ) : (
               <div className="space-y-3">

@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher()
 
-# УВАГА: Заміни це посилання на своє актуальне з ngrok!
+# Посилання на Telegram MiniApp у Ngrok
 WEB_APP_URL = "https://fletcher-inordinate-leontine.ngrok-free.dev"
 
 # --- 1. Визначаємо стани (FSM) ---
@@ -41,9 +41,10 @@ def get_registration_kb():
         one_time_keyboard=True
     )
 
-def get_main_menu_kb():
+def get_main_menu_kb(telegram_id: int = None):
+    url = f"{WEB_APP_URL}?tg_id={telegram_id}" if telegram_id else WEB_APP_URL
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚕 Запустити Express Taxi", web_app=WebAppInfo(url=WEB_APP_URL))]
+        [InlineKeyboardButton(text="🚕 Запустити Express Taxi", web_app=WebAppInfo(url=url))]
     ])
 
 # --- 2. Обробка команди /start ---
@@ -60,62 +61,72 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await state.clear()
             await message.answer(
                 f"З поверненням, {user.full_name}! 👋",
-                reply_markup=get_main_menu_kb()
+                reply_markup=get_main_menu_kb(message.from_user.id)
             )
         else:
             # Якщо новий — просимо телефон
             await state.set_state(AuthStates.waiting_for_phone)
             await message.answer(
                 "Вітаємо в Drogobych Express Taxi! 🚕\n\n"
-                "Натисніть кнопку нижче, щоб поділитися своїм номером телефону для реєстрації:",
+                "Натисніть кнопку нижче або просто напишіть свій номер телефону (наприклад, +380991234567):",
                 reply_markup=get_registration_kb()
             )
 
-# --- 3. Обробка номеру телефону (ТІЛЬКИ КОНТАКТ) ---
-@dp.message(AuthStates.waiting_for_phone, F.contact)
+# --- 3. Обробка номеру телефону (Контакт АБО Текст) ---
+@dp.message(AuthStates.waiting_for_phone, F.contact | F.text)
 async def process_phone(message: types.Message, state: FSMContext):
-    # БЕЗПЕКА: Перевіряємо, чи це дійсно номер користувача (а не чужий контакт)
-    if message.contact.user_id != message.from_user.id:
-        await message.answer(
-            "❌ З метою безпеки, будь ласка, надішліть САМЕ ВАШ контакт, використовуючи кнопку внизу.",
-            reply_markup=get_registration_kb()
-        )
+    # Отримуємо номер з контакту або з тексту
+    if message.contact:
+        raw_phone = message.contact.phone_number
+    else:
+        raw_phone = message.text
+
+    # Очищаємо номер від усіх символів крім цифр
+    digits = re.sub(r'\D', '', raw_phone)
+    if not digits:
+        await message.answer("❌ Некоректний номер телефону. Спробуйте ще раз або скористайтеся кнопкою внизу.")
         return
 
-    raw_phone = message.contact.phone_number
-
-    # Очищаємо номер від пробілів та дужок
-    phone = re.sub(r'[^\d+]', '', raw_phone)
-    if not phone.startswith('+'):
-        phone = '+' + phone
+    phone = '+' + digits
 
     async with async_session_maker() as session:
-        stmt = select(User).where(User.phone == phone)
+        # 1. Шукаємо користувача за telegram_id АБО за номером телефону
+        stmt = select(User).where(
+            (User.telegram_id == message.from_user.id) | (User.phone == phone)
+        )
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
         if user:
             if user.role == UserRole.DRIVER:
-                # Це ВОДІЙ! Переводимо в стан очікування пароля
-                await state.update_data(user_id=user.id)
-                await state.set_state(AuthStates.waiting_for_password)
+                # ВОДІЙ: Авторизація за номером телефону БЕЗ ПАРОЛІВ!
+                user.telegram_id = message.from_user.id
+                user.phone = phone
+                user.full_name = message.from_user.full_name or user.full_name
+                await session.commit()
+
+                await state.clear()
                 await message.answer(
-                    "🚖 Система розпізнала вас як Водія.\n"
-                    "Будь ласка, введіть ваш пароль для доступу:",
-                    reply_markup=ReplyKeyboardRemove() # Прибираємо кнопку контакту
+                    f"🚖 **Вітаємо, {user.full_name}!**\n"
+                    f"Авторизацію водія успішно пройдено за номером телефону!\n"
+                    f"Гарної зміни! Відкрийте робочу панель водія:",
+                    reply_markup=get_main_menu_kb(message.from_user.id)
                 )
                 return
             else:
-                # Це існуючий пасажир, оновлюємо його tg_id
+                # Пасажир: оновлюємо дані
                 user.telegram_id = message.from_user.id
-                user.full_name = message.from_user.full_name
+                user.phone = phone
+                user.full_name = message.from_user.full_name or user.full_name
+                if not user.stats:
+                    user.stats = UserStats(total_trips=0, total_noshows=0, trust_score_cached=100)
                 await session.commit()
         else:
-            # Це новий ПАСАЖИР
+            # Створюємо нового пасажира
             new_user = User(
                 telegram_id=message.from_user.id,
                 phone=phone,
-                full_name=message.from_user.full_name,
+                full_name=message.from_user.full_name or "Пасажир",
                 role=UserRole.PASSENGER,
                 stats=UserStats(total_trips=0, total_noshows=0, trust_score_cached=100)
             )
@@ -124,24 +135,9 @@ async def process_phone(message: types.Message, state: FSMContext):
 
     # Завершуємо реєстрацію для пасажира
     await state.clear()
-    
-    # UX ПРАВКА: Спочатку надсилаємо повідомлення, яке ПРИХОВАЄ клавіатуру контакту
-    await message.answer("✅ Номер успішно підтверджено!", reply_markup=ReplyKeyboardRemove())
-    
-    # Потім надсилаємо меню з WebApp
     await message.answer(
-        "Реєстрацію завершено! Тепер ви можете бронювати квитки 👇",
-        reply_markup=get_main_menu_kb()
-    )
-
-# --- 3.1. Захист від хитрощів (Якщо користувач ввів текст замість натискання кнопки) ---
-@dp.message(AuthStates.waiting_for_phone)
-async def process_phone_invalid(message: types.Message):
-    # Тільки сваримо і нагадуємо про кнопку. Стан НЕ очищаємо!
-    await message.answer(
-        "❌ Будь ласка, використовуйте спеціальну кнопку «📱 Поділитися номером» внизу екрану.\n"
-        "(Якщо кнопки немає, натисніть на іконку з 4 квадратиками біля поля вводу тексту).",
-        reply_markup=get_registration_kb()
+        "✅ Реєстрацію успішно завершено!",
+        reply_markup=get_main_menu_kb(message.from_user.id)
     )
 
 # --- 4. Обробка пароля для ВОДІЯ ---
@@ -171,19 +167,28 @@ async def process_password(message: types.Message, state: FSMContext):
         else:
             await message.answer("❌ Невірний пароль. Спробуйте ще раз:")
 
-from aiogram.types import MenuButtonWebApp, WebAppInfo
+# --- 5. Захист: будь-яке інше повідомлення від незареєстрованого користувача ---
+@dp.message()
+async def unauth_message_handler(message: types.Message, state: FSMContext):
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if user and user.phone:
+            await message.answer("Оберіть потрібну дію в меню нижче:", reply_markup=get_main_menu_kb(message.from_user.id))
+        else:
+            await state.set_state(AuthStates.waiting_for_phone)
+            await message.answer(
+                "⚠️ **Для користування сервісом Express Taxi необхідно завершити реєстрацію!**\n\n"
+                "Будь ласка, натисніть кнопку «📱 Поділитися номером» внизу або введіть ваш номер телефону:",
+                reply_markup=get_registration_kb()
+            )
 
 async def main():
-    # Встановлюємо кнопку меню, яка завжди висітиме зліва від поля вводу
-    await bot.set_chat_menu_button(
-        menu_button=MenuButtonWebApp(
-            text="🚕 Відкрити таксі",
-            web_app=WebAppInfo(url=WEB_APP_URL)
-        )
-    )
-    logging.info("🚀 Бот запущений")
+    logging.info("🚀 Бот з FSM Авторизацією запущений")
     await dp.start_polling(bot)
-    
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())

@@ -1,9 +1,18 @@
 document.addEventListener('DOMContentLoaded', () => {
     const tg = window.Telegram.WebApp;
+    if (tg.ready) tg.ready();
     tg.expand();
     tg.setHeaderColor("#facc15");
     
-    let telegramId = tg.initDataUnsafe?.user?.id || 1685900931;
+    const urlParams = new URLSearchParams(window.location.search);
+    const paramTgId = urlParams.get('tg_id');
+
+    let telegramId = tg.initDataUnsafe?.user?.id || (paramTgId ? Number(paramTgId) : null);
+    if (telegramId) {
+        localStorage.setItem('express_taxi_tg_id', telegramId);
+    } else {
+        telegramId = Number(localStorage.getItem('express_taxi_tg_id')) || 1685900931;
+    }
     let fallbackName = tg.initDataUnsafe?.user?.first_name || "Користувач";
 
     const API_URL = window.location.origin + '/api';
@@ -32,21 +41,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const passengerNav = document.getElementById('passenger-nav');
     const viewDriver = document.getElementById('view-driver');
 
-    // Налаштовуємо дати
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    dateInput.value = tomorrow.toISOString().split('T')[0];
-    dateInput.min = today.toISOString().split('T')[0];
+    // Налаштовуємо дати (за замовчуванням - Сьогодні)
+    const todayStr = getKyivDateStr(0);
+    dateInput.value = todayStr;
+    dateInput.min = todayStr;
 
-
-    // 👇 ДОДАЙ ЦЕЙ БЛОК ДЛЯ ВОДІЯ 👇
     const summaryDatePicker = document.getElementById('summary-date-picker');
     if (summaryDatePicker) {
-        // Ставимо сьогоднішню дату за замовчуванням
-        summaryDatePicker.value = today.toISOString().split('T')[0];
-        
-        // Коли водій змінює дату - автоматично завантажуємо новий звіт
+        summaryDatePicker.value = todayStr;
         summaryDatePicker.addEventListener('change', fetchDriverSummary);
     }
     // 👆 КІНЕЦЬ НОВОГО БЛОКУ 👆
@@ -121,6 +123,12 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // 1. Профіль + маршрутизація за роллю
     async function fetchUserData() {
+        nameEl.textContent = fallbackName;
+        roleEl.textContent = 'Пасажир 🚶';
+        tripsEl.textContent = '🚕 Поїздок: 0';
+        const initialParts = fallbackName.split(' ');
+        avatarEl.textContent = initialParts.map(p => p[0]).join('').substring(0, 2).toUpperCase() || '🚕';
+
         try {
             const response = await fetch(`${API_URL}/users/${telegramId}`, { headers: { 'ngrok-skip-browser-warning': 'true' }});
             if (!response.ok) throw new Error('Користувача не знайдено');
@@ -129,6 +137,41 @@ document.addEventListener('DOMContentLoaded', () => {
             nameEl.textContent = userData.full_name || fallbackName;
             const nameParts = (userData.full_name || fallbackName).split(' ');
             avatarEl.textContent = nameParts.map(p => p[0]).join('').substring(0, 2).toUpperCase();
+
+            // Кнопка редагування ПІБ
+            const editNameBtn = document.getElementById('editNameBtn');
+            if (editNameBtn && !editNameBtn.dataset.bound) {
+                editNameBtn.dataset.bound = 'true';
+                editNameBtn.addEventListener('click', async () => {
+                    const currentName = userData.full_name || fallbackName;
+                    const newName = prompt(
+                        "Введіть ваше справжнє Ім'я та Прізвище (це допоможе водієві швидше ідентифікувати вас під час посадки):",
+                        currentName
+                    );
+                    if (newName && newName.trim() && newName.trim() !== currentName) {
+                        try {
+                            const res = await fetch(`${API_URL}/users/${telegramId}`, {
+                                method: 'PUT',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'ngrok-skip-browser-warning': 'true'
+                                },
+                                body: JSON.stringify({ full_name: newName.trim() })
+                            });
+                            if (res.ok) {
+                                const updated = await res.json();
+                                userData.full_name = updated.full_name;
+                                nameEl.textContent = updated.full_name;
+                                const parts = updated.full_name.split(' ');
+                                avatarEl.textContent = parts.map(p => p[0]).join('').substring(0, 2).toUpperCase();
+                                alert("✅ Ім'я та Прізвище успішно оновлено!");
+                            }
+                        } catch (err) {
+                            alert("❌ Помилка оновлення імені");
+                        }
+                    }
+                });
+            }
 
             // --- РОЛЬ: ВОДІЙ ---
             if (userData.role === 'DRIVER' || userData.role === 'driver') {
@@ -156,9 +199,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (error) {
             console.error('Помилка профілю:', error);
-            nameEl.textContent = fallbackName;
-            // У разі помилки — показуємо пасажирський режим за замовчуванням
-            fetchLocations();
+            const lockScreen = document.getElementById('unregistered-lock-screen');
+            if (lockScreen) lockScreen.classList.remove('hidden');
         }
     }
 
@@ -170,7 +212,10 @@ document.addEventListener('DOMContentLoaded', () => {
             let optionsHtml = locations.map(loc => `<option value="${loc.id}">${loc.name}</option>`).join('');
             fromSelect.innerHTML = optionsHtml;
             toSelect.innerHTML = optionsHtml;
-            if (locations.length >= 2) { fromSelect.value = locations[1].id; toSelect.value = locations[0].id; }
+            if (locations.length >= 2) { 
+                fromSelect.value = locations[0].id; // Дрогобич
+                toSelect.value = locations[1].id;   // Львів
+            }
         } catch (error) { console.error(error); }
     }
 
@@ -314,9 +359,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 if (response.ok) {
-                    alert(`✅ Бронювання успішне!`);
+                    alert(`✅ Бронювання успішне! Квиток додано у розділ «Мої квитки».`);
                     closeBookingModal();
-                    searchBtn.click(); // Оновлюємо пошук
+                    searchBtn.click(); // Оновлюємо кількість місць у пошуку
+                    navTrips.click();  // Автоматично відкриваємо «Мої квитки»!
                 } else {
                     const errorData = await response.json();
                     alert(`❌ Помилка: ${errorData.detail}`);
@@ -814,9 +860,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            let html = `<div class="bg-green-100 text-green-800 text-center p-4 rounded-2xl mb-4 border border-green-200">
-                            <p class="text-sm font-bold uppercase">Заробіток за ${data.date}</p>
-                            <p class="text-4xl font-black mt-1">${data.total_sum} ₴</p>
+            let html = `<div class="bg-amber-100 text-amber-900 text-center p-4 rounded-2xl mb-4 border border-amber-300 shadow-sm">
+                            <p class="text-xs font-black uppercase text-amber-800 tracking-wider">💵 ЗДАТИ КАСИРУ ЗА ${data.date}</p>
+                            <p class="text-3xl font-black mt-1 text-amber-950 font-mono">${data.total_to_hand_in ?? 0} ₴</p>
+                            <p class="text-[11px] font-bold text-amber-700 mt-1">Розрахована каса до здачі за активними квитками рейсів</p>
                         </div>`;
 
             data.trips.forEach(trip => {

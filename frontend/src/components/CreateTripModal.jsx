@@ -22,6 +22,9 @@ export default function CreateTripModal({ isOpen, onClose, onSuccess }) {
     departure_time: '08:00',
     driver_id: '',
     vehicle_id: '',
+    price_seated: '',
+    price_standing: '',
+    price_parcel: '',
   });
 
   // Template Form State
@@ -145,13 +148,19 @@ export default function CreateTripModal({ isOpen, onClose, onSuccess }) {
         throw new Error('Обов\'язково виберіть водія та авто');
       }
 
-      await api.post('/trips', {
+      const payload = {
         date: manualForm.date,
         route: manualForm.route,
         departure_time: manualForm.departure_time,
         driver_id: Number(manualForm.driver_id),
         vehicle_id: Number(manualForm.vehicle_id),
-      });
+      };
+
+      if (manualForm.price_seated) payload.price_seated = Number(manualForm.price_seated);
+      if (manualForm.price_standing) payload.price_standing = Number(manualForm.price_standing);
+      if (manualForm.price_parcel) payload.price_parcel = Number(manualForm.price_parcel);
+
+      await api.post('/trips', payload);
 
       setSubmitSuccess(true);
       setTimeout(() => {
@@ -353,6 +362,52 @@ export default function CreateTripModal({ isOpen, onClose, onSuccess }) {
                       </option>
                     ))}
                   </select>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-800/80 pt-4">
+                <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                  Індивідуальні тарифи рейсу (необов'язково)
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">
+                      Сидяче місце (₴)
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="За замовчуванням (120)"
+                      value={manualForm.price_seated}
+                      onChange={(e) => setManualForm({ ...manualForm, price_seated: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-2.5 text-xs text-yellow-400 font-bold outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">
+                      Стояче місце (₴)
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="За замовчуванням (80)"
+                      value={manualForm.price_standing}
+                      onChange={(e) => setManualForm({ ...manualForm, price_standing: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-2.5 text-xs text-slate-200 font-bold outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">
+                      Коробка / Посилка (₴)
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="За замовчуванням (100)"
+                      value={manualForm.price_parcel}
+                      onChange={(e) => setManualForm({ ...manualForm, price_parcel: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-2.5 text-xs text-emerald-400 font-bold outline-none"
+                    />
+                  </div>
                 </div>
               </div>
 

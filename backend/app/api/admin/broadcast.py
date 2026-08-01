@@ -34,13 +34,15 @@ async def run_telegram_broadcast(recipients: list[int], text: str):
         await bot.session.close()
 
 
+from sqlalchemy.orm import selectinload
+
 @router.post("/preview")
 async def preview_broadcast(
     payload: BroadcastRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(check_admin_access),
 ):
-    recipients = await _recipient_ids(db, payload.trip_id)
+    recipients = await _recipient_ids(db, payload.trip_id, payload.target_group)
     return {"recipients_count": len(recipients), "text": payload.text}
 
 
@@ -51,8 +53,20 @@ async def send_broadcast(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(check_admin_access),
 ):
-    recipients = await _recipient_ids(db, payload.trip_id)
+    recipients = await _recipient_ids(db, payload.trip_id, payload.target_group)
     background_tasks.add_task(run_telegram_broadcast, recipients, payload.text)
+
+    record_audit_log(
+        db,
+        current_user,
+        "ANNOUNCEMENT_BROADCAST_SENT",
+        entity_type="broadcast",
+        entity_id=0,
+        source="WEB",
+        message=f"Оголошення надіслано для ({payload.target_group or 'all'}) ({len(recipients)} осіб): {payload.text[:50]}...",
+    )
+    await db.commit()
+
     return {
         "message": "Broadcast queued",
         "recipients_count": len(recipients),
@@ -94,7 +108,6 @@ async def preview_publish_schedule(
     drivers_count = len(distinct_drivers)
     total_seats_limit = sum(t.seats_limit_snapshot for t in trips)
 
-    # Calculate total revenue for active bookings in this set of trips
     if trips:
         trip_ids = [t.id for t in trips]
         b_stmt = select(func.sum(Booking.amount_paid)).where(
@@ -128,6 +141,60 @@ async def publish_schedule(
     except ValueError:
         raise HTTPException(status_code=400, detail="Формат дати повинен бути YYYY-MM-DD")
 
+    start_dt = datetime.combine(d_from, time.min, tzinfo=KYIV_TZ)
+    end_dt = datetime.combine(d_to, time.max, tzinfo=KYIV_TZ)
+
+    stmt = (
+        select(Trip)
+        .where(
+            Trip.departure_time >= start_dt,
+            Trip.departure_time <= end_dt,
+            Trip.status != TripStatus.CANCELLED,
+        )
+        .options(
+            selectinload(Trip.driver),
+            selectinload(Trip.vehicle),
+            selectinload(Trip.from_location),
+            selectinload(Trip.to_location),
+        )
+    )
+    if payload.driver_id:
+        stmt = stmt.where(Trip.driver_id == payload.driver_id)
+
+    res = await db.execute(stmt)
+    trips = res.scalars().all()
+
+    driver_trips = {}
+    for t in trips:
+        if t.driver and t.driver.telegram_id:
+            driver_trips.setdefault(t.driver, []).append(t)
+
+    drivers_notified = 0
+    for driver, d_trips in driver_trips.items():
+        trips_lines = []
+        for tr in sorted(d_trips, key=lambda x: x.departure_time):
+            dep_date = tr.departure_time.strftime("%d.%m.%Y")
+            dep_time = tr.departure_time.strftime("%H:%M")
+            route_name = (
+                f"{tr.from_location.name} -> {tr.to_location.name}"
+                if (tr.from_location and tr.to_location)
+                else tr.route
+            )
+            vehicle_info = f"{tr.vehicle.model} ({tr.vehicle.plate_number})" if tr.vehicle else "Авто не призначено"
+            trips_lines.append(f"🚌 **Рейс #{tr.id}** — {dep_date} о {dep_time}\n   Маршрут: {route_name}\n   Авто: {vehicle_info}")
+
+        lines_text = "\n\n".join(trips_lines)
+        comment_text = f"\n\n💬 *Примітка диспетчера:* {payload.comment}" if payload.comment else ""
+        msg_text = (
+            f"📅 **ОФІЦІЙНИЙ ГРАФІК РЕЙСІВ**\n"
+            f"Період: {payload.date_from} — {payload.date_to}\n\n"
+            f"{lines_text}"
+            f"{comment_text}\n\n"
+            f"Будь ласка, прибудьте на посадку за 15 хвилин до відправлення."
+        )
+        asyncio.create_task(run_telegram_broadcast([driver.telegram_id], msg_text))
+        drivers_notified += 1
+
     driver_label = "Усім водіям"
     if payload.driver_id:
         driver = await db.get(User, payload.driver_id)
@@ -141,30 +208,52 @@ async def publish_schedule(
         entity_type="schedule",
         entity_id=0,
         source="WEB",
-        message=f"Графік опубліковано для {driver_label} на період {payload.date_from} — {payload.date_to}. Примітка: {payload.comment or '—'}",
+        message=f"Графік опубліковано для {driver_label} на період {payload.date_from} — {payload.date_to} ({drivers_notified} водіїв сповіщено в Telegram). Примітка: {payload.comment or '—'}",
     )
     await db.commit()
 
     return {
         "success": True,
-        "message": f"Графік рейсів з {payload.date_from} по {payload.date_to} для ({driver_label}) успішно опубліковано!",
+        "message": f"Графік рейсів з {payload.date_from} по {payload.date_to} для ({driver_label}) успішно опубліковано! ({drivers_notified} водіїв отримали сповіщення у Telegram)",
         "date_from": payload.date_from,
         "date_to": payload.date_to,
         "comment": payload.comment,
     }
 
 
-async def _recipient_ids(db: AsyncSession, trip_id: int | None) -> list[int]:
-    if not trip_id or trip_id == 0:
-        stmt = select(User.telegram_id).where(User.telegram_id.is_not(None))
-    else:
+async def _recipient_ids(db: AsyncSession, trip_id: int | None = None, target_group: str | None = "all") -> list[int]:
+    if target_group == "drivers":
+        stmt = select(User.telegram_id).where(
+            User.role == UserRole.DRIVER,
+            User.telegram_id.isnot(None),
+        )
+    elif target_group == "today_passengers":
+        today = datetime.now(KYIV_TZ).date()
+        start_dt = datetime.combine(today, time.min, tzinfo=KYIV_TZ)
+        end_dt = datetime.combine(today, time.max, tzinfo=KYIV_TZ)
         stmt = (
             select(User.telegram_id)
             .join(Booking, Booking.passenger_id == User.id)
-            .where(User.telegram_id.is_not(None))
-            .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
-            .where(Booking.trip_id == trip_id)
+            .join(Trip, Booking.trip_id == Trip.id)
+            .where(
+                User.telegram_id.isnot(None),
+                Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]),
+                Trip.departure_time >= start_dt,
+                Trip.departure_time <= end_dt,
+            )
         )
+    elif trip_id and trip_id > 0:
+        stmt = (
+            select(User.telegram_id)
+            .join(Booking, Booking.passenger_id == User.id)
+            .where(
+                User.telegram_id.isnot(None),
+                Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]),
+                Booking.trip_id == trip_id,
+            )
+        )
+    else:
+        stmt = select(User.telegram_id).where(User.telegram_id.isnot(None))
 
     result = await db.execute(stmt.distinct())
-    return [telegram_id for telegram_id in result.scalars().all() if telegram_id]
+    return [t_id for (t_id,) in result.all() if t_id]

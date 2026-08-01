@@ -5,9 +5,10 @@ from sqlalchemy.orm import aliased
 from datetime import datetime, timezone, timedelta
 
 from app.db.database import async_session_maker
-from app.db.models import Trip, Booking, User, BookingType, BookingSource, BookingStatus, Location
+from app.db.models import Trip, Booking, User, UserRole, BookingType, BookingSource, BookingStatus, Location
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, StandingBookingCreate, ParcelBookingCreate
 from app.services.admin_use_cases import refresh_user_stats
+from app.websocket_manager import manager
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -20,7 +21,7 @@ async def create_booking(booking_in: BookingCreate):
         user = user_result.scalar_one_or_none()
 
         if not user:
-            raise HTTPException(status_code=404, detail="Користувача не знайдено")
+            raise HTTPException(status_code=400, detail="Спочатку пройдіть реєстрацію у Telegram-боті та поділіться номером телефону!")
 
         # 2. Починаємо транзакцію і БЛОКУЄМО рядок рейсу (захист від Race Condition)
         # with_for_update() - це і є той самий SELECT ... FOR UPDATE з SRS
@@ -30,6 +31,11 @@ async def create_booking(booking_in: BookingCreate):
 
         if not trip:
             raise HTTPException(status_code=404, detail="Рейс не знайдено")
+
+        # Перевірка: чи не виїхав рейс раніше поточного часу
+        now_kyiv = datetime.now(timezone.utc)
+        if trip.departure_time < now_kyiv:
+            raise HTTPException(status_code=400, detail="Цей рейс вже виїхав. Бронювання минулих рейсів неможливе!")
 
         # 3. Рахуємо вже зайняті місця
         booked_stmt = (
@@ -79,6 +85,7 @@ async def create_booking(booking_in: BookingCreate):
         # 6. Зберігаємо всі квитки разом (транзакція)
         try:
             await session.commit()
+            await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
             return {"message": f"Успішно заброньовано {booking_in.requested_seats} місць!"}
         except IntegrityError:
             await session.rollback()
@@ -92,7 +99,7 @@ async def get_my_bookings(telegram_id: int):
         user_stmt = select(User).where(User.telegram_id == telegram_id)
         user = (await session.execute(user_stmt)).scalar_one_or_none()
         if not user:
-            raise HTTPException(status_code=404, detail="Користувача не знайдено")
+            return []
 
         # Оскільки ми не прописували relationship між Booking і Trip у models.py, 
         # ми об'єднаємо таблиці (JOIN) прямо тут, щоб дістати назви міст і час.
@@ -149,21 +156,12 @@ async def cancel_booking(booking_id: int, telegram_id: int):
         if booking.status not in [BookingStatus.RESERVED, BookingStatus.PAID]:
             raise HTTPException(status_code=400, detail="Цей квиток вже не можна скасувати")
 
-        # ПЕРЕВІРКА ПРАВИЛА 2 ГОДИН (UC-P5)
-        now = datetime.now(timezone.utc)
-        time_left = trip.departure_time - now
-        
-        if time_left < timedelta(hours=2):
-            raise HTTPException(
-                status_code=400, 
-                detail="Скасування неможливе — до відправлення залишилося менше 2 годин. Зверніться до диспетчера."
-            )
-
-        # Скасовуємо
+        # Скасовуємо у будь-який момент для активного бронювання
         booking.status = BookingStatus.CANCELLED
         if booking.passenger_id:
             await refresh_user_stats(session, booking.passenger_id)
         await session.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
         
         return {"message": "Бронювання успішно скасовано"}
     
@@ -204,6 +202,7 @@ async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
             await refresh_user_stats(session, booking.passenger_id)
 
         await session.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": booking.trip_id})
         return {"message": f"Статус квитка оновлено на {payload.status}"}
 
 
@@ -272,6 +271,7 @@ async def add_standing_passenger(payload: StandingBookingCreate):
         
         session.add(new_booking)
         await session.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
         
         return {"message": "Стоячий пасажир додано"}
     
@@ -309,12 +309,13 @@ async def add_parcel(payload: ParcelBookingCreate):
             source=source_val,
             status=BookingStatus.BOARDED,  # Посилка відразу вважається прийнятою
             passengers_count=1,            # 1 посилка = 1 одиниця
-            amount_paid=payload.price,
+            amount_paid=payload.price if (payload.price and payload.price > 0) else (getattr(trip, 'price_parcel', 100.0) or 100.0),
             comment=payload.description    # Якщо в БД є поле comment. Якщо ні - просто видали цей рядок
         )
         
         session.add(new_booking)
         await session.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
         
         return {"message": "Посилку додано"}
     
@@ -351,6 +352,7 @@ async def cancel_quick_sale(booking_id: int, telegram_id: int):
         # Видаляємо запис повністю (або ставимо статус CANCELLED)
         await session.delete(booking)
         await session.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
         
         return {"message": "Запис успішно видалено"}
     
@@ -409,6 +411,7 @@ async def add_seated_passenger(payload: StandingBookingCreate):
         
         session.add(new_booking)
         await session.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
         return {"message": "Сидячого пасажира додано"}
 
 
@@ -472,4 +475,5 @@ async def add_standing_passenger(payload: StandingBookingCreate):
         
         session.add(new_booking)
         await session.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
         return {"message": "Стоячий пасажир додано"}

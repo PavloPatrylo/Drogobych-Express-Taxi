@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+import csv
+import io
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -378,7 +380,13 @@ def user_to_admin(user: User) -> AdminUserResponse:
     stats = getattr(user, "stats", None)
     total_trips = stats.total_trips if stats else 0
     total_noshows = stats.total_noshows if stats else 0
-    trust_score = stats.trust_score_cached if stats else max(0, round(100 - (total_noshows / max(total_trips, 1)) * 100))
+    trust_score = stats.trust_score_cached if stats else 100
+    registration_source = "Telegram-бот" if user.telegram_id else "Телефонний дзвінок"
+
+    last_trip_str = None
+    if stats and stats.last_trip_date:
+        last_trip_str = _date_string(stats.last_trip_date)
+
     return AdminUserResponse(
         id=user.id,
         name=user.full_name,
@@ -391,10 +399,25 @@ def user_to_admin(user: User) -> AdminUserResponse:
         total_trips=total_trips,
         total_noshows=total_noshows,
         trust_score=trust_score,
+        registration_source=registration_source,
+        last_trip_date=last_trip_str,
     )
 
 
 def trip_to_admin(trip: Trip) -> AdminTripResponse:
+    bookings_loaded = 'bookings' in trip.__dict__
+    valid_bookings = []
+    if bookings_loaded:
+        for b in trip.bookings:
+            b_status = b.status.name if hasattr(b.status, 'name') else str(b.status)
+            if b_status not in ('CANCELLED', 'NOSHOW'):
+                valid_bookings.append(b)
+
+    booked_seats = sum(b.passengers_count for b in valid_bookings if b.booking_type == BookingType.SEATED)
+    booked_standing = sum(b.passengers_count for b in valid_bookings if b.booking_type == BookingType.STANDING)
+    parcels_count = sum(b.passengers_count for b in valid_bookings if b.booking_type == BookingType.PARCEL)
+    total_revenue = sum(_as_float(b.amount_paid) for b in valid_bookings)
+
     return AdminTripResponse(
         id=trip.id,
         driver_id=trip.driver_id,
@@ -421,6 +444,10 @@ def trip_to_admin(trip: Trip) -> AdminTripResponse:
         driver_phone=trip.driver.phone if trip.driver else None,
         vehicle_plate=trip.vehicle.plate_number if trip.vehicle else None,
         vehicle_model=trip.vehicle.model if trip.vehicle else None,
+        booked_seats=booked_seats,
+        booked_standing=booked_standing,
+        parcels_count=parcels_count,
+        total_revenue=total_revenue,
     )
 
 
@@ -568,6 +595,7 @@ async def list_trips(db: AsyncSession) -> list[AdminTripResponse]:
             selectinload(Trip.closed_by),
             selectinload(Trip.driver),
             selectinload(Trip.vehicle),
+            selectinload(Trip.bookings),
         )
         .order_by(Trip.departure_time.desc())
     )
@@ -616,6 +644,7 @@ async def create_trip(db: AsyncSession, payload: AdminTripCreate, actor: User | 
     cfg = await _get_system_config(db)
     final_price_seated = payload.price_seated if payload.price_seated is not None else _as_float(cfg.price_seated)
     final_price_standing = payload.price_standing if payload.price_standing is not None else _as_float(cfg.price_standing)
+    final_price_parcel = payload.price_parcel if payload.price_parcel is not None else _as_float(cfg.price_parcel)
 
     trip = Trip(
         driver_id=driver.id,
@@ -629,6 +658,7 @@ async def create_trip(db: AsyncSession, payload: AdminTripCreate, actor: User | 
         standing_limit_snapshot=vehicle.total_standing,
         price_seated=final_price_seated,
         price_standing=final_price_standing,
+        price_parcel=final_price_parcel,
     )
     db.add(trip)
     await db.flush()
@@ -707,8 +737,36 @@ async def update_trip(
     if conflict.scalars().first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Driver or vehicle already assigned")
 
-    # If vehicle changed, update snapshot limits
+    # If vehicle changed, update snapshot limits with overbooking validation
     if trip.vehicle_id != vehicle.id:
+        seated_res = await db.execute(
+            select(func.sum(Booking.passengers_count)).where(
+                Booking.trip_id == trip.id,
+                Booking.booking_type == BookingType.SEATED,
+                Booking.status.in_(ACTIVE_BOOKING_STATUSES),
+            )
+        )
+        booked_seated = seated_res.scalar() or 0
+        if vehicle.total_seats < booked_seated:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Неможливо замінити авто на {vehicle.plate_number} ({vehicle.total_seats} місць): на рейс вже заброньовано {booked_seated} сидячих місць!",
+            )
+
+        standing_res = await db.execute(
+            select(func.sum(Booking.passengers_count)).where(
+                Booking.trip_id == trip.id,
+                Booking.booking_type == BookingType.STANDING,
+                Booking.status.in_(ACTIVE_BOOKING_STATUSES),
+            )
+        )
+        booked_standing = standing_res.scalar() or 0
+        if vehicle.total_standing < booked_standing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Неможливо замінити авто на {vehicle.plate_number} ({vehicle.total_standing} стоячих): на рейс вже заброньовано {booked_standing} стоячих місць!",
+            )
+
         trip.seats_limit_snapshot = vehicle.total_seats
         trip.standing_limit_snapshot = vehicle.total_standing
 
@@ -720,6 +778,8 @@ async def update_trip(
     trip.arrival_time = arrival
     trip.price_seated = payload.price_seated
     trip.price_standing = payload.price_standing
+    if payload.price_parcel is not None:
+        trip.price_parcel = payload.price_parcel
 
     record_audit_log(
         db,
@@ -770,6 +830,7 @@ async def update_trip_status(
             selectinload(Trip.closed_by),
             selectinload(Trip.driver),
             selectinload(Trip.vehicle),
+            selectinload(Trip.bookings),
         )
         .with_for_update()
     )
@@ -778,6 +839,13 @@ async def update_trip_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trip not found")
 
     previous_status = trip.status
+
+    if previous_status in (TripStatus.COMPLETED, TripStatus.CLOSED):
+        if new_status != TripStatus.CLOSED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Зміна статусу заблокована: якщо рейс вже завершено водієм або закрито, його стан не можна змінювати.",
+            )
 
     if new_status == TripStatus.CLOSED and previous_status != TripStatus.COMPLETED:
         raise HTTPException(
@@ -792,14 +860,48 @@ async def update_trip_status(
                 detail="Trip already finalized or cancelled",
             )
         trip.status = TripStatus.CANCELLED
-        bookings = await db.execute(
+        bookings_res = await db.execute(
             select(Booking).where(
                 Booking.trip_id == trip.id,
-                Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID]),
+                Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]),
             )
         )
-        for booking in bookings.scalars().all():
+        active_bookings = bookings_res.scalars().all()
+        for booking in active_bookings:
             booking.status = BookingStatus.CANCELLED
+
+        passenger_ids = [b.passenger_id for b in active_bookings if b.passenger_id]
+        if passenger_ids:
+            passengers_res = await db.execute(
+                select(User.telegram_id).where(
+                    User.id.in_(passenger_ids),
+                    User.telegram_id.isnot(None),
+                )
+            )
+            telegram_ids = [t_id for (t_id,) in passengers_res.all() if t_id]
+
+            if telegram_ids:
+                route_title = (
+                    f"{trip.from_location.name} -> {trip.to_location.name}"
+                    if (trip.from_location and trip.to_location)
+                    else trip.route
+                )
+                date_str = _date_string(trip.departure_time)
+                time_str = _time_string(trip.departure_time)
+
+                cancel_msg = (
+                    f"⚠️ **РЕЙС СКАСОВАНО**\n\n"
+                    f"Шановний пасажире, на жаль, рейс **{route_title}** "
+                    f"на **{date_str} о {time_str}** скасовано диспетчером.\n\n"
+                    f"Для уточнення деталей чи перебронювання квитків зв'яжіться з диспетчером."
+                )
+
+                try:
+                    from app.api.admin.broadcast import run_telegram_broadcast
+                    import asyncio
+                    asyncio.create_task(run_telegram_broadcast(telegram_ids, cancel_msg))
+                except Exception as e:
+                    print(f"Failed to queue telegram cancel notifications: {e}")
     else:
         if trip.status == TripStatus.CLOSED:
             raise HTTPException(
@@ -845,6 +947,7 @@ async def update_trip_assign_use_case(
 
     result = await db.execute(
         select(Trip)
+
         .where(Trip.id == trip_id)
         .options(
             selectinload(Trip.from_location),
@@ -885,6 +988,34 @@ async def update_trip_assign_use_case(
         )
 
     if trip.vehicle_id != vehicle.id:
+        seated_res = await db.execute(
+            select(func.sum(Booking.passengers_count)).where(
+                Booking.trip_id == trip.id,
+                Booking.booking_type == BookingType.SEATED,
+                Booking.status.in_(ACTIVE_BOOKING_STATUSES),
+            )
+        )
+        booked_seated = seated_res.scalar() or 0
+        if vehicle.total_seats < booked_seated:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Неможливо замінити авто на {vehicle.plate_number} ({vehicle.total_seats} місць): на рейс вже заброньовано {booked_seated} сидячих місць!",
+            )
+
+        standing_res = await db.execute(
+            select(func.sum(Booking.passengers_count)).where(
+                Booking.trip_id == trip.id,
+                Booking.booking_type == BookingType.STANDING,
+                Booking.status.in_(ACTIVE_BOOKING_STATUSES),
+            )
+        )
+        booked_standing = standing_res.scalar() or 0
+        if vehicle.total_standing < booked_standing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Неможливо замінити авто на {vehicle.plate_number} ({vehicle.total_standing} стоячих): на рейс вже заброньовано {booked_standing} стоячих місць!",
+            )
+
         trip.seats_limit_snapshot = vehicle.total_seats
         trip.standing_limit_snapshot = vehicle.total_standing
 
@@ -999,10 +1130,23 @@ async def create_offline_booking(
             detail="Booking is only allowed on SCHEDULED or BOARDING trips",
         )
 
-    passenger_result = await db.execute(select(User).where(User.phone == phone))
+    digits = re.sub(r"\D", "", phone or "")
+    if digits.startswith("380") and len(digits) == 12:
+        digits = digits[2:]
+    if len(digits) != 10 or not digits.startswith("0"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Номер телефону повинен містити рівно 10 цифр і починатися з 0 (наприклад: 0971234567)",
+        )
+    formatted_phone = f"+38{digits}"
+    raw_phone = digits
+
+    passenger_result = await db.execute(
+        select(User).where((User.phone == formatted_phone) | (User.phone == raw_phone))
+    )
     passenger = passenger_result.scalars().first()
     if not passenger:
-        passenger = User(phone=phone, full_name=full_name or phone, role=UserRole.PASSENGER, is_active=True)
+        passenger = User(phone=formatted_phone, full_name=full_name or formatted_phone, role=UserRole.PASSENGER, is_active=True)
         db.add(passenger)
         await db.flush()
     if not passenger.is_active:
@@ -1067,6 +1211,13 @@ async def cancel_booking(
     booking = result.scalars().first()
     if not booking:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+
+    trip = await db.get(Trip, booking.trip_id)
+    if trip and trip.status in (TripStatus.CLOSED, TripStatus.CANCELLED):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неможливо скасовувати квитки у фінансово закритому або скасованому рейсі",
+        )
 
     # Fetch passenger separately to avoid locking on nullable side of outer join
     passenger = None
@@ -1174,7 +1325,6 @@ async def dashboard(db: AsyncSession) -> dict:
 
 
 async def refresh_user_stats(db: AsyncSession, user_id: int):
-    # 1. Ensure UserStats exists for this user
     stats_result = await db.execute(select(UserStats).where(UserStats.user_id == user_id))
     stats = stats_result.scalars().first()
     if not stats:
@@ -1182,28 +1332,55 @@ async def refresh_user_stats(db: AsyncSession, user_id: int):
         db.add(stats)
         await db.flush()
 
-    # 2. Count boarded bookings (total completed trips)
-    boarded_stmt = select(func.count(Booking.id)).where(
-        Booking.passenger_id == user_id,
-        Booking.status == BookingStatus.BOARDED
+    stmt = (
+        select(Booking, Trip)
+        .join(Trip, Booking.trip_id == Trip.id)
+        .where(Booking.passenger_id == user_id)
+        .order_by(Trip.departure_time.asc())
     )
-    boarded_count = (await db.execute(boarded_stmt)).scalar() or 0
+    res = await db.execute(stmt)
+    rows = res.all()
 
-    # 3. Count noshow bookings
-    noshow_stmt = select(func.count(Booking.id)).where(
-        Booking.passenger_id == user_id,
-        Booking.status == BookingStatus.NOSHOW
-    )
-    noshow_count = (await db.execute(noshow_stmt)).scalar() or 0
+    boarded_count = 0
+    noshow_count = 0
+    early_cancellations = 0
+    current_streak = 0
+    neutralized_noshows = 0
+    last_trip_dt = None
 
-    # 4. Update stats and trust score cached
+    for booking, trip in rows:
+        if booking.status in (BookingStatus.BOARDED, BookingStatus.PAID):
+            boarded_count += 1
+            current_streak += 1
+            if trip.departure_time:
+                if last_trip_dt is None or trip.departure_time > last_trip_dt:
+                    last_trip_dt = trip.departure_time
+            if current_streak >= 5 and (noshow_count > neutralized_noshows):
+                neutralized_noshows += 1
+                current_streak = 0
+        elif booking.status == BookingStatus.NOSHOW:
+            noshow_count += 1
+            current_streak = 0
+        elif booking.status == BookingStatus.CANCELLED:
+            if booking.created_at and trip.departure_time:
+                diff = (trip.departure_time - booking.created_at).total_seconds()
+                if diff >= 7200:
+                    early_cancellations += 1
+
+    effective_noshows = max(0, noshow_count - neutralized_noshows)
+    base_score = 100 - (effective_noshows * 25)
+    streak_bonus = min(boarded_count * 5, 40)
+    early_cancel_bonus = early_cancellations * 2
+
+    if boarded_count == 0 and noshow_count == 0:
+        trust_score = 100
+    else:
+        trust_score = max(0, min(100, base_score + streak_bonus + early_cancel_bonus))
+
     stats.total_trips = boarded_count
     stats.total_noshows = noshow_count
-    total_relevant = boarded_count + noshow_count
-    if total_relevant > 0:
-        stats.trust_score_cached = max(0, round(100 - (noshow_count / total_relevant) * 100))
-    else:
-        stats.trust_score_cached = 100
+    stats.trust_score_cached = trust_score
+    stats.last_trip_date = last_trip_dt
 
 
 async def get_trip_manifest_use_case(
@@ -1243,7 +1420,8 @@ async def get_trip_manifest_use_case(
         resp = booking_to_admin(booking, passenger)
         booking_responses.append(resp)
 
-        if booking.status != BookingStatus.CANCELLED:
+        b_status = booking.status.name if hasattr(booking.status, 'name') else str(booking.status)
+        if b_status not in ('CANCELLED', 'NOSHOW'):
             total_revenue += resp.amount_paid
             if booking.booking_type == BookingType.SEATED:
                 seated_count += booking.passengers_count
@@ -1304,12 +1482,37 @@ async def create_manifest_booking_use_case(
         passenger.full_name = payload.full_name
 
     if payload.booking_type == BookingType.SEATED:
+        booked_res = await db.execute(
+            select(func.sum(Booking.passengers_count)).where(
+                Booking.trip_id == trip.id,
+                Booking.booking_type == BookingType.SEATED,
+                Booking.status.in_(ACTIVE_BOOKING_STATUSES),
+            )
+        )
+        booked_seats = booked_res.scalar() or 0
+        if trip.seats_limit_snapshot - booked_seats < payload.seats:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Недостатньо вільних сидячих місць (вільно: {max(0, trip.seats_limit_snapshot - booked_seats)})",
+            )
         unit_price = _as_float(trip.price_seated)
     elif payload.booking_type == BookingType.STANDING:
+        booked_res = await db.execute(
+            select(func.sum(Booking.passengers_count)).where(
+                Booking.trip_id == trip.id,
+                Booking.booking_type == BookingType.STANDING,
+                Booking.status.in_(ACTIVE_BOOKING_STATUSES),
+            )
+        )
+        booked_standing = booked_res.scalar() or 0
+        if trip.standing_limit_snapshot - booked_standing < payload.seats:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Ліміт стоячих місць вичерпано (вільно: {max(0, trip.standing_limit_snapshot - booked_standing)})",
+            )
         unit_price = _as_float(trip.price_standing)
     else:
-        cfg = await _get_system_config(db)
-        unit_price = _as_float(cfg.price_parcel)
+        unit_price = _as_float(getattr(trip, 'price_parcel', 100.0) or 100.0)
 
     amount = unit_price * payload.seats
 
@@ -1382,5 +1585,567 @@ async def update_booking_status_use_case(
     await db.refresh(booking)
     passenger = await db.get(User, booking.passenger_id) if booking.passenger_id else None
     return booking_to_admin(booking, passenger)
-    stats.trust_score_cached = max(0, round(100 - (noshow_count / max(boarded_count, 1)) * 100))
-    await db.flush()
+
+
+async def drivers_cash_reconciliation_use_case(
+    db: AsyncSession,
+    target_date: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    now_kyiv = datetime.now(KYIV_TZ)
+    if date_from and date_to:
+        try:
+            d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
+            d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+        except ValueError:
+            d_from = now_kyiv.date()
+            d_to = now_kyiv.date()
+    elif target_date:
+        try:
+            d_from = datetime.strptime(target_date, "%Y-%m-%d").date()
+            d_to = d_from
+        except ValueError:
+            d_from = now_kyiv.date()
+            d_to = now_kyiv.date()
+    else:
+        d_from = now_kyiv.date()
+        d_to = now_kyiv.date()
+
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+
+    drivers_stmt = (
+        select(User)
+        .where(User.role == UserRole.DRIVER)
+        .order_by(User.full_name)
+    )
+    drivers = (await db.execute(drivers_stmt)).scalars().all()
+
+    FromLoc = aliased(Location)
+    ToLoc = aliased(Location)
+
+    start_dt = datetime.combine(d_from, time.min, tzinfo=KYIV_TZ)
+    end_dt = datetime.combine(d_to, time.max, tzinfo=KYIV_TZ)
+    driver_summaries = []
+
+    global_expected_revenue = 0.0
+    global_submitted_cash = 0.0
+    global_submitted_card = 0.0
+    global_completed_trips = 0
+
+    global_total_passengers = 0
+    occupancy_rates = []
+    routes_map = {}
+    all_trips_perf = []
+
+    # Chart aggregation map: label -> { revenue: 0.0, trips: 0, passengers: 0 }
+    is_single_day = (d_from == d_to)
+    chart_buckets = {}
+
+    if is_single_day:
+        for h in range(6, 23):
+            label = f"{h:02d}:00"
+            chart_buckets[label] = {"label": label, "revenue": 0.0, "trips": 0, "passengers": 0}
+    else:
+        curr = d_from
+        while curr <= d_to:
+            label = curr.strftime("%d.%m")
+            chart_buckets[label] = {"label": label, "revenue": 0.0, "trips": 0, "passengers": 0}
+            curr += timedelta(days=1)
+
+    for driver in drivers:
+        trips_stmt = (
+            select(Trip, FromLoc.name, ToLoc.name)
+            .options(selectinload(Trip.closed_by))
+            .join(FromLoc, Trip.from_location_id == FromLoc.id)
+            .join(ToLoc, Trip.to_location_id == ToLoc.id)
+            .where(Trip.driver_id == driver.id)
+            .where(Trip.departure_time >= start_dt)
+            .where(Trip.departure_time <= end_dt)
+            .where(Trip.status != TripStatus.CANCELLED)
+            .order_by(Trip.departure_time)
+        )
+        trips_rows = (await db.execute(trips_stmt)).all()
+
+        total_trips_count = len(trips_rows)
+        completed_trips_count = sum(1 for t, _, _ in trips_rows if t.status in (TripStatus.COMPLETED, TripStatus.CLOSED))
+        closed_trips_count = sum(1 for t, _, _ in trips_rows if t.status == TripStatus.CLOSED)
+
+        expected_total_sum = 0.0
+
+        actual_submitted_cash = 0.0
+        actual_submitted_card = 0.0
+
+        closed_by_names = set()
+        trip_details = []
+
+        for trip, from_name, to_name in trips_rows:
+            bookings_stmt = select(Booking).where(
+                Booking.trip_id == trip.id,
+                Booking.status.in_([BookingStatus.BOARDED, BookingStatus.PAID, BookingStatus.RESERVED])
+            )
+            bookings = (await db.execute(bookings_stmt)).scalars().all()
+
+            t_expected = sum(float(b.amount_paid or 0) for b in bookings)
+            expected_total_sum += t_expected
+
+            t_passengers = sum(
+                b.passengers_count for b in bookings 
+                if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() in ('SEATED', 'STANDING')
+            )
+            global_total_passengers += t_passengers
+
+            capacity = (trip.seats_limit_snapshot or 0) + (trip.standing_limit_snapshot or 0)
+            occ_pct = min(100.0, round((t_passengers / capacity) * 100.0, 1)) if capacity > 0 else 0.0
+            if capacity > 0:
+                occupancy_rates.append(occ_pct)
+
+            route_name = f"{from_name} → {to_name}"
+            if route_name not in routes_map:
+                routes_map[route_name] = {"route": route_name, "revenue": 0.0, "passengers": 0, "trips": 0, "occupancies": []}
+
+            routes_map[route_name]["revenue"] += t_expected
+            routes_map[route_name]["passengers"] += t_passengers
+            routes_map[route_name]["trips"] += 1
+            if capacity > 0:
+                routes_map[route_name]["occupancies"].append(occ_pct)
+
+            t_cash = float(trip.submitted_cash) if trip.submitted_cash is not None else t_expected
+            t_card = float(trip.submitted_card) if trip.submitted_card is not None else 0.0
+
+            actual_submitted_cash += t_cash
+            actual_submitted_card += t_card
+
+            if trip.closed_by:
+                closed_by_names.add(trip.closed_by.full_name)
+
+            dep_kyiv = (trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time).astimezone(KYIV_TZ)
+
+            all_trips_perf.append({
+                "trip_id": trip.id,
+                "time": dep_kyiv.strftime("%H:%M"),
+                "date": dep_kyiv.strftime("%d.%m.%Y"),
+                "route": route_name,
+                "driver_name": driver.full_name,
+                "revenue": t_expected,
+                "passengers": t_passengers,
+                "capacity": capacity,
+                "occupancy_pct": occ_pct,
+                "status": trip.status.name,
+            })
+
+            # Chart bucket attribution
+            if is_single_day:
+                h_label = f"{dep_kyiv.hour:02d}:00"
+                if h_label in chart_buckets:
+                    chart_buckets[h_label]["revenue"] += t_expected
+                    chart_buckets[h_label]["trips"] += 1
+                    chart_buckets[h_label]["passengers"] += t_passengers
+            else:
+                d_label = dep_kyiv.strftime("%d.%m")
+                if d_label in chart_buckets:
+                    chart_buckets[d_label]["revenue"] += t_expected
+                    chart_buckets[d_label]["trips"] += 1
+                    chart_buckets[d_label]["passengers"] += t_passengers
+
+            trip_details.append({
+                "trip_id": trip.id,
+                "time": dep_kyiv.strftime("%H:%M"),
+                "route": f"{from_name} → {to_name}",
+                "status": trip.status.name,
+                "expected_revenue": t_expected,
+                "submitted_cash": t_cash,
+                "submitted_card": t_card,
+            })
+
+        total_submitted = actual_submitted_cash + actual_submitted_card
+        discrepancy = total_submitted - expected_total_sum
+
+        if completed_trips_count > 0 and closed_trips_count == completed_trips_count:
+            rec_status = "CLOSED"
+        elif completed_trips_count > 0:
+            rec_status = "PENDING"
+        elif total_trips_count > 0:
+            rec_status = "SCHEDULED"
+        else:
+            rec_status = "NO_TRIPS"
+
+        if total_trips_count > 0:
+            global_expected_revenue += expected_total_sum
+            global_submitted_cash += actual_submitted_cash
+            global_submitted_card += actual_submitted_card
+            global_completed_trips += completed_trips_count
+
+            driver_summaries.append({
+                "driver_id": driver.id,
+                "driver_name": driver.full_name,
+                "driver_phone": driver.phone or "—",
+                "telegram_id": driver.telegram_id,
+                "total_trips": total_trips_count,
+                "completed_trips": completed_trips_count,
+                "closed_trips": closed_trips_count,
+                "expected_total": expected_total_sum,
+                "submitted_cash": actual_submitted_cash,
+                "submitted_card": actual_submitted_card,
+                "total_submitted": total_submitted,
+                "discrepancy": discrepancy,
+                "status": rec_status,
+                "closed_by": ", ".join(closed_by_names) if closed_by_names else None,
+                "trips": trip_details,
+            })
+
+    date_str = d_from.strftime("%d.%m.%Y") if d_from == d_to else f"{d_from.strftime('%d.%m.%Y')} — {d_to.strftime('%d.%m.%Y')}"
+    
+    avg_occupancy = round(sum(occupancy_rates) / len(occupancy_rates), 1) if occupancy_rates else 0.0
+    avg_revenue_per_trip = round(global_expected_revenue / global_completed_trips, 2) if global_completed_trips > 0 else 0.0
+
+    routes_list = []
+    for r_name, r_data in routes_map.items():
+        avg_occ = round(sum(r_data["occupancies"]) / len(r_data["occupancies"]), 1) if r_data["occupancies"] else 0.0
+        routes_list.append({
+            "route": r_name,
+            "revenue": r_data["revenue"],
+            "passengers": r_data["passengers"],
+            "trips": r_data["trips"],
+            "avg_occupancy_rate": avg_occ,
+        })
+
+    routes_list.sort(key=lambda x: x["revenue"], reverse=True)
+    top_trips = sorted(all_trips_perf, key=lambda x: x["revenue"], reverse=True)[:5]
+    weak_trips = [t for t in sorted(all_trips_perf, key=lambda x: x["occupancy_pct"]) if t["occupancy_pct"] < 30.0][:5]
+
+    return {
+        "date": date_str,
+        "date_from": d_from.strftime("%Y-%m-%d"),
+        "date_to": d_to.strftime("%Y-%m-%d"),
+        "raw_date": d_from.strftime("%Y-%m-%d"),
+        "analytics": {
+            "gross_revenue": global_expected_revenue,
+            "completed_trips": global_completed_trips,
+            "avg_revenue_per_trip": avg_revenue_per_trip,
+            "total_passengers": global_total_passengers,
+            "avg_occupancy_rate": avg_occupancy,
+            "chart": list(chart_buckets.values()),
+            "routes_comparison": routes_list,
+            "top_trips": top_trips,
+            "weak_trips": weak_trips,
+        },
+        "global": {
+            "expected_revenue": global_expected_revenue,
+            "submitted_cash": global_submitted_cash,
+            "submitted_card": global_submitted_card,
+            "total_submitted": global_submitted_cash + global_submitted_card,
+            "discrepancy": (global_submitted_cash + global_submitted_card) - global_expected_revenue,
+            "completed_trips": global_completed_trips,
+            "active_drivers_count": len(driver_summaries),
+        },
+        "drivers": driver_summaries,
+    }
+
+
+async def confirm_driver_cash_use_case(
+    db: AsyncSession,
+    actor: User,
+    driver_id: int,
+    target_date: str,
+    received_cash: float,
+    received_card: float,
+    comment: str | None = None,
+) -> dict:
+    if actor.role not in (UserRole.ADMIN, UserRole.DISPATCHER):
+        raise HTTPException(status_code=403, detail="Лише Диспетчер або Адмін може підтверджувати здачу каси")
+
+    try:
+        filter_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Невірний формат дати (очікується YYYY-MM-DD)")
+
+    driver = await db.get(User, driver_id)
+    if not driver or driver.role != UserRole.DRIVER:
+        raise HTTPException(status_code=404, detail="Водія не знайдено")
+
+    start_dt = datetime.combine(filter_date, time.min, tzinfo=KYIV_TZ)
+    end_dt = datetime.combine(filter_date, time.max, tzinfo=KYIV_TZ)
+
+    trips_stmt = (
+        select(Trip)
+        .where(Trip.driver_id == driver_id)
+        .where(Trip.departure_time >= start_dt)
+        .where(Trip.departure_time <= end_dt)
+        .where(Trip.status.in_([TripStatus.COMPLETED, TripStatus.CLOSED]))
+        .with_for_update()
+    )
+    trips = (await db.execute(trips_stmt)).scalars().all()
+
+    if not trips:
+        raise HTTPException(status_code=400, detail=f"У водія {driver.full_name} немає завершених рейсів за {target_date}")
+
+    count = len(trips)
+    per_trip_cash = received_cash / count if count > 0 else 0.0
+    per_trip_card = received_card / count if count > 0 else 0.0
+
+    for trip in trips:
+        trip.status = TripStatus.CLOSED
+        trip.submitted_cash = per_trip_cash
+        trip.submitted_card = per_trip_card
+        trip.submitted_amount = per_trip_cash + per_trip_card
+        trip.closed_by_id = actor.id
+        trip.close_comment = comment or f"Касу підтверджено касиром {actor.full_name}"
+
+    record_audit_log(
+        db,
+        actor,
+        "DRIVER_CASH_CONFIRMED",
+        entity_type="driver",
+        entity_id=driver_id,
+        message=f"Підтверджено касу водія {driver.full_name} за {target_date}: Готівка={received_cash}₴, Картка={received_card}₴. Прийняв: {actor.full_name}",
+    )
+
+    await db.commit()
+    from app.websocket_manager import manager
+    await manager.broadcast("CASH_CONFIRMED", {"driver_id": driver_id, "target_date": target_date})
+    return await drivers_cash_reconciliation_use_case(db, target_date)
+
+
+async def export_drivers_cash_csv(
+    db: AsyncSession,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    res = await drivers_cash_reconciliation_use_case(db, date_from=date_from, date_to=date_to)
+    drivers = res.get("drivers", [])
+
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output, delimiter=';')
+
+    writer.writerow([
+        "Водій",
+        "Телефон",
+        "Всього рейсів",
+        "Завершені рейси",
+        "Закриті рейси",
+        "Розрахункова каса (грн)",
+        "Здано готівкою (грн)",
+        "Оплачено на картку (грн)",
+        "Всього здано (грн)",
+        "Різниця / Відхилення (грн)",
+        "Статус зведення",
+        "Прийняв касир"
+    ])
+
+    for d in drivers:
+        st_text = "Здано касиру" if d["status"] == "CLOSED" else ("Очікує здачі" if d["status"] == "PENDING" else "Немає завершених рейсів")
+        writer.writerow([
+            d["driver_name"],
+            d["driver_phone"],
+            d["total_trips"],
+            d["completed_trips"],
+            d["closed_trips"],
+            d["expected_total"],
+            d["submitted_cash"],
+            d["submitted_card"],
+            d["total_submitted"],
+            d["discrepancy"],
+            st_text,
+            d["closed_by"] or "—"
+        ])
+
+    return output.getvalue()
+
+
+async def export_trips_register_csv(
+    db: AsyncSession,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    now_kyiv = datetime.now(KYIV_TZ)
+    try:
+        d_f = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else now_kyiv.date()
+        d_t = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else now_kyiv.date()
+    except ValueError:
+        d_f = now_kyiv.date()
+        d_t = now_kyiv.date()
+
+    if d_f > d_t:
+        d_f, d_t = d_t, d_f
+
+    start_dt = datetime.combine(d_f, time.min, tzinfo=KYIV_TZ)
+    end_dt = datetime.combine(d_t, time.max, tzinfo=KYIV_TZ)
+
+    FromLoc = aliased(Location)
+    ToLoc = aliased(Location)
+
+    stmt = (
+        select(Trip, User, Vehicle, FromLoc.name, ToLoc.name)
+        .options(selectinload(Trip.closed_by))
+        .join(User, Trip.driver_id == User.id)
+        .join(Vehicle, Trip.vehicle_id == Vehicle.id)
+        .join(FromLoc, Trip.from_location_id == FromLoc.id)
+        .join(ToLoc, Trip.to_location_id == ToLoc.id)
+        .where(Trip.departure_time >= start_dt)
+        .where(Trip.departure_time <= end_dt)
+        .order_by(Trip.departure_time)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output, delimiter=';')
+
+    writer.writerow([
+        "Дата",
+        "Час",
+        "Маршрут",
+        "Водій",
+        "Автобус",
+        "Номерний знак",
+        "Статус рейсу",
+        "Сидячих пасажирів",
+        "Стоячих пасажирів",
+        "Посилок",
+        "Розрахункова каса (грн)",
+        "Здана готівка (грн)",
+        "Здана картка (грн)",
+        "Прийняв касир"
+    ])
+
+    for trip, driver, vehicle, from_name, to_name in rows:
+        bookings_stmt = select(Booking).where(
+            Booking.trip_id == trip.id,
+            Booking.status.in_([BookingStatus.BOARDED, BookingStatus.PAID, BookingStatus.RESERVED])
+        )
+        bookings = (await db.execute(bookings_stmt)).scalars().all()
+
+        seated = sum(b.passengers_count for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'SEATED')
+        standing = sum(b.passengers_count for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'STANDING')
+        parcels = sum(1 for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'PARCEL')
+        expected_rev = sum(float(b.amount_paid or 0) for b in bookings)
+
+        dep_kyiv = (trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time).astimezone(KYIV_TZ)
+
+        writer.writerow([
+            dep_kyiv.strftime("%d.%m.%Y"),
+            dep_kyiv.strftime("%H:%M"),
+            f"{from_name} → {to_name}",
+            driver.full_name,
+            vehicle.model,
+            vehicle.plate_number,
+            trip.status.name,
+            seated,
+            standing,
+            parcels,
+            expected_rev,
+            trip.submitted_cash if trip.submitted_cash is not None else expected_rev,
+            trip.submitted_card if trip.submitted_card is not None else 0.0,
+            trip.closed_by.full_name if trip.closed_by else "—"
+        ])
+
+    return output.getvalue()
+
+
+async def export_parcels_register_csv(
+    db: AsyncSession,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    now_kyiv = datetime.now(KYIV_TZ)
+    try:
+        d_f = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else now_kyiv.date()
+        d_t = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else now_kyiv.date()
+    except ValueError:
+        d_f = now_kyiv.date()
+        d_t = now_kyiv.date()
+
+    if d_f > d_t:
+        d_f, d_t = d_t, d_f
+
+    start_dt = datetime.combine(d_f, time.min, tzinfo=KYIV_TZ)
+    end_dt = datetime.combine(d_t, time.max, tzinfo=KYIV_TZ)
+
+    FromLoc = aliased(Location)
+    ToLoc = aliased(Location)
+
+    stmt = (
+        select(Booking, Trip, User, FromLoc.name, ToLoc.name)
+        .options(selectinload(Booking.passenger))
+        .join(Trip, Booking.trip_id == Trip.id)
+        .join(User, Trip.driver_id == User.id)
+        .join(FromLoc, Trip.from_location_id == FromLoc.id)
+        .join(ToLoc, Trip.to_location_id == ToLoc.id)
+        .where(Booking.booking_type == BookingType.PARCEL)
+        .where(Trip.departure_time >= start_dt)
+        .where(Trip.departure_time <= end_dt)
+        .where(Booking.status != BookingStatus.CANCELLED)
+        .order_by(Trip.departure_time)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output, delimiter=';')
+
+    writer.writerow([
+        "Дата рейсу",
+        "Час",
+        "Маршрут",
+        "Водій",
+        "Відправник / Пасажир",
+        "Телефон",
+        "Джерело",
+        "Сума до сплати (грн)",
+        "Статус посилки",
+        "Примітка"
+    ])
+
+    for booking, trip, driver, from_name, to_name in rows:
+        dep_kyiv = (trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if trip.departure_time.tzinfo is None else trip.departure_time).astimezone(KYIV_TZ)
+        p_name = booking.passenger.full_name if booking.passenger else "Невідомий"
+        p_phone = booking.passenger.phone if booking.passenger else "—"
+
+        writer.writerow([
+            dep_kyiv.strftime("%d.%m.%Y"),
+            dep_kyiv.strftime("%H:%M"),
+            f"{from_name} → {to_name}",
+            driver.full_name,
+            p_name,
+            p_phone,
+            booking.source.name,
+            booking.amount_paid or 0.0,
+            booking.status.name,
+            booking.comment or "—"
+        ])
+
+    return output.getvalue()
+
+
+async def get_finance_closures_history_use_case(
+    db: AsyncSession,
+    limit: int = 50,
+) -> list[dict]:
+    stmt = (
+        select(AuditLog, User)
+        .outerjoin(User, AuditLog.actor_id == User.id)
+        .where(AuditLog.action.in_(["DRIVER_CASH_CONFIRMED", "TRIP_CLOSED"]))
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    history = []
+    for audit, actor in rows:
+        created_kyiv = (audit.created_at.replace(tzinfo=ZoneInfo("UTC")) if audit.created_at.tzinfo is None else audit.created_at).astimezone(KYIV_TZ)
+        history.append({
+            "id": audit.id,
+            "created_at": created_kyiv.strftime("%d.%m.%Y %H:%M:%S"),
+            "action": audit.action,
+            "actor_name": actor.full_name if actor else "Система",
+            "actor_role": actor.role.name if actor else "SYSTEM",
+            "message": audit.message or "",
+            "entity_type": audit.entity_type,
+            "entity_id": audit.entity_id,
+            "trip_id": audit.trip_id,
+        })
+
+    return history

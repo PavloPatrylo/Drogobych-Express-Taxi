@@ -8,22 +8,28 @@
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body class="bg-gray-100 font-sans text-gray-900 pb-10">
-    <!-- 1. Шапка профілю (ДОДАНО КНОПКУ ІНФО) -->
-    <div class="bg-yellow-400 p-6 rounded-b-3xl text-black shadow-lg relative">
-        <!-- Кнопка "Довідка" у правому верхньому куті -->
-        <button id="infoBtn" class="absolute top-5 right-5 bg-black/10 hover:bg-black/20 text-black px-3 py-1.5 rounded-full text-sm font-bold flex items-center gap-1 transition-colors">
-            <span class="text-lg leading-none">ℹ️</span> Інфо
-        </button>
+    <!-- 1. Шапка профілю -->
+    <div class="bg-yellow-400 p-6 rounded-b-3xl text-black shadow-lg">
+        <!-- Кнопки дій (Змінити ПІБ та Інфо) -->
+        <div class="flex items-center justify-between mb-3 gap-2">
+            <button id="editNameBtn" title="Вказати справжнє Ім'я та Прізвище" class="text-xs bg-black/10 hover:bg-black/20 text-black px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-all shadow-sm">
+                ✏️ Змінити ПІБ
+            </button>
+            <button id="infoBtn" class="text-xs bg-black/10 hover:bg-black/20 text-black px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-all shadow-sm">
+                ℹ️ Довідка
+            </button>
+        </div>
 
-        <div class="flex items-center space-x-4">
-            <div id="user-avatar" class="w-16 h-16 bg-black/10 rounded-full flex items-center justify-center text-2xl font-bold border-2 border-black/20">--</div>
-            <div>
-                <h1 id="user-name" class="text-xl font-bold">Завантаження...</h1>
-                <p id="user-role" class="text-black/60 text-sm font-medium">Отримання даних...</p>
+        <div class="flex items-center space-x-3">
+            <div id="user-avatar" class="w-14 h-14 bg-black/10 rounded-full flex items-center justify-center text-xl font-black border-2 border-black/20 shrink-0">🚕</div>
+            <div class="flex-1 min-w-0">
+                <h1 id="user-name" class="text-lg font-extrabold truncate">Пасажир</h1>
+                <p id="user-role" class="text-black/70 text-xs font-semibold mt-0.5">Пасажир 🚶</p>
             </div>
         </div>
-        <div class="mt-4 flex justify-center bg-black/5 p-3 rounded-xl text-sm font-bold border border-black/10">
-            <span id="user-trips">🚕 Поїздок: ...</span>
+
+        <div class="mt-4 flex justify-center bg-black/5 p-2.5 rounded-xl text-xs font-bold border border-black/10">
+            <span id="user-trips">🚕 Поїздок: 0</span>
         </div>
     </div>
 
@@ -183,7 +189,19 @@
         </div>
     </div>
     
+    <!-- Екран блокування для незареєстрованого користувача -->
+    <div id="unregistered-lock-screen" class="fixed inset-0 bg-yellow-400 z-50 flex flex-col items-center justify-center p-6 text-center space-y-4 hidden">
+        <div class="w-20 h-20 bg-black/10 rounded-full flex items-center justify-center text-4xl shadow-inner mb-2">📱</div>
+        <h1 class="text-2xl font-black text-black">Реєстрацію не завершено</h1>
+        <p class="text-sm font-semibold text-black/80 max-w-xs leading-relaxed">
+            Для користування Express Taxi поділіться номером телефону у чаті Telegram-бота.
+        </p>
+        <div class="p-4 bg-black/10 rounded-2xl border border-black/20 text-xs font-bold text-black max-w-xs">
+            👉 Закрийте MiniApp, натисніть <b>«📱 Поділитися номером»</b> у чаті бота та спробуйте зайти знову!
+        </div>
+    </div>
+
     <!-- Твій JavaScript -->
-    <script src="app.js?v=75"></script>
+    <script src="app.js?v=82"></script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../services/api';
+import { useWebSocket } from '../context/WebSocketContext';
 import {
   X,
   Calendar,
@@ -50,6 +51,15 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
   const [isSavingVehicle, setIsSavingVehicle] = useState(false);
   const [isSavingDriver, setIsSavingDriver] = useState(false);
 
+  // Edit states for Prices
+  const [isEditingPrices, setIsEditingPrices] = useState(false);
+  const [priceForm, setPriceForm] = useState({
+    price_seated: '',
+    price_standing: '',
+    price_parcel: '',
+  });
+  const [isSavingPrices, setIsSavingPrices] = useState(false);
+
   // Financial Closure Modal State
   const [showCloseModal, setShowCloseModal] = useState(false);
   const [closeForm, setCloseForm] = useState({
@@ -90,6 +100,16 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
       setIsLoadingManifest(false);
     }
   };
+
+  const { lastEvent } = useWebSocket();
+
+  useEffect(() => {
+    if (isOpen && currentTrip && lastEvent) {
+      if (['BOOKING_MUTATED', 'TRIP_MUTATED'].includes(lastEvent.event)) {
+        fetchManifest(currentTrip.id);
+      }
+    }
+  }, [lastEvent, isOpen]);
 
   useEffect(() => {
     if (isOpen && initialTrip) {
@@ -149,13 +169,44 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
       fetchManifest(currentTrip.id);
       if (onUpdate) onUpdate();
     } catch (err) {
-      alert(`Помилка зміни водія: ${err.message}`);
+      alert(`Помилка призначення водія: ${err.message}`);
     } finally {
       setIsSavingDriver(false);
     }
   };
 
+  const handleSavePrices = async () => {
+    setIsSavingPrices(true);
+    try {
+      const updated = await api.put(`/trips/${currentTrip.id}`, {
+        driver_id: Number(currentTrip.driver_id),
+        vehicle_id: Number(currentTrip.vehicle_id),
+        route: currentTrip.route,
+        date: currentTrip.date,
+        departure_time: currentTrip.departure_time,
+        arrival_time: currentTrip.arrival_time,
+        price_seated: Number(priceForm.price_seated),
+        price_standing: Number(priceForm.price_standing),
+        price_parcel: Number(priceForm.price_parcel),
+      });
+      setCurrentTrip(updated);
+      setIsEditingPrices(false);
+      fetchManifest(currentTrip.id);
+      if (onUpdate) onUpdate();
+    } catch (err) {
+      alert(`Помилка збереження тарифів рейсу: ${err.message}`);
+    } finally {
+      setIsSavingPrices(false);
+    }
+  };
+
   const handleStatusChange = async (newStatus) => {
+    if (newStatus === 'CANCELLED') {
+      if (!confirm(`⚠️ Ви дійсно бажаєте скасувати рейс #${currentTrip.id}? Всім заброньованим пасажирам буде автоматично надіслано сповіщення про скасування у Telegram!`)) {
+        return;
+      }
+    }
+
     if (newStatus === 'CLOSED') {
       if (currentTrip.status !== 'COMPLETED') {
         alert("⚠️ Закрити рейс (фінансове закриття) можна лише після його завершення (коли оперативний стан 'Завершено').");
@@ -219,6 +270,14 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
     e.preventDefault();
     if (!newBooking.phone) {
       alert('Будь ласка, вкажіть телефон пасажира');
+      return;
+    }
+    let digits = newBooking.phone.replace(/\D/g, '');
+    if (digits.startsWith('380') && digits.length === 12) {
+      digits = digits.slice(2);
+    }
+    if (digits.length !== 10 || !digits.startsWith('0')) {
+      alert('⚠️ Номер телефону повинен містити рівно 10 цифр (наприклад: 0971234567 або +380971234567)!');
       return;
     }
     setIsAddingBooking(true);
@@ -612,23 +671,102 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
               </div>
 
               {/* Tariffs & Capacity Card */}
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
-                <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-                  <DollarSign size={16} className="text-emerald-400" />
-                  <span>Тариф та Місткість</span>
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2 relative group">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                    <DollarSign size={16} className="text-emerald-400" />
+                    <span>Тариф та Місткість</span>
+                  </div>
+
+                  {!isEditingPrices && currentTrip.status !== 'CLOSED' && (
+                    <button
+                      onClick={() => {
+                        setPriceForm({
+                          price_seated: currentTrip.price_seated || 120,
+                          price_standing: currentTrip.price_standing || 80,
+                          price_parcel: currentTrip.price_parcel || 100,
+                        });
+                        setIsEditingPrices(true);
+                      }}
+                      className="w-6 h-6 rounded-md bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-400 border border-emerald-500/30 flex items-center justify-center transition-all cursor-pointer shadow-sm hover:scale-105"
+                      title="Редагувати тарифи рейсу"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  )}
                 </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Сидяче:</span>
-                  <span className="font-mono font-bold text-yellow-400">{currentTrip.price_seated} ₴</span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Стояче:</span>
-                  <span className="font-mono font-bold text-slate-200">{currentTrip.price_standing} ₴</span>
-                </div>
-                <div className="text-[11px] text-slate-500 pt-1 border-t border-slate-800 flex justify-between">
-                  <span>Місткість:</span>
-                  <span className="text-slate-300 font-semibold">{currentTrip.seats_limit_snapshot} сид. / {currentTrip.standing_limit_snapshot} ст.</span>
-                </div>
+
+                {isEditingPrices ? (
+                  <div className="space-y-2 pt-1">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1 font-semibold">Сидяче (₴)</label>
+                        <input
+                          type="number"
+                          value={priceForm.price_seated}
+                          onChange={(e) => setPriceForm({ ...priceForm, price_seated: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-700 text-xs font-bold text-yellow-400 rounded-lg p-1.5 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1 font-semibold">Стояче (₴)</label>
+                        <input
+                          type="number"
+                          value={priceForm.price_standing}
+                          onChange={(e) => setPriceForm({ ...priceForm, price_standing: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-700 text-xs font-bold text-slate-200 rounded-lg p-1.5 outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1 font-semibold">Коробка (₴)</label>
+                        <input
+                          type="number"
+                          value={priceForm.price_parcel}
+                          onChange={(e) => setPriceForm({ ...priceForm, price_parcel: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-700 text-xs font-bold text-emerald-400 rounded-lg p-1.5 outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingPrices(false)}
+                        className="px-2 py-1 rounded bg-slate-800 text-slate-400 hover:text-slate-200 text-xs cursor-pointer"
+                      >
+                        <X size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSavePrices}
+                        disabled={isSavingPrices}
+                        className="px-3 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <Check size={14} />
+                        <span>Зберегти</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Сидяче:</span>
+                      <span className="font-mono font-bold text-yellow-400">{currentTrip.price_seated} ₴</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Стояче:</span>
+                      <span className="font-mono font-bold text-slate-200">{currentTrip.price_standing} ₴</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Коробка / Посилка:</span>
+                      <span className="font-mono font-bold text-emerald-400">{currentTrip.price_parcel || 100} ₴</span>
+                    </div>
+                    <div className="text-[11px] text-slate-500 pt-1 border-t border-slate-800 flex justify-between">
+                      <span>Місткість:</span>
+                      <span className="text-slate-300 font-semibold">{currentTrip.seats_limit_snapshot} сид. / {currentTrip.standing_limit_snapshot} ст.</span>
+                    </div>
+                  </>
+                )}
               </div>
 
             </div>
@@ -679,8 +817,9 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                  {['SCHEDULED', 'BOARDING', 'ACTIVE', 'COMPLETED', 'CLOSED'].map((st) => {
+                  {['SCHEDULED', 'BOARDING', 'ACTIVE', 'COMPLETED', 'CLOSED', 'CANCELLED'].map((st) => {
                     const isClosedOption = st === 'CLOSED';
+                    const isCancelledOption = st === 'CANCELLED';
                     const isClosingDisabled = isClosedOption && currentTrip.status !== 'COMPLETED';
 
                     return (
@@ -692,6 +831,8 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
                         className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                           currentTrip.status === st
                             ? 'bg-yellow-400 text-slate-950 shadow-md cursor-default'
+                            : isCancelledOption
+                            ? 'bg-red-500/20 text-red-300 border border-red-500/40 hover:bg-red-500/40 cursor-pointer'
                             : isClosedOption
                             ? isClosingDisabled
                               ? 'bg-purple-500/10 text-purple-400/40 border border-purple-500/20 cursor-not-allowed opacity-50'
@@ -947,12 +1088,11 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
                     <select
                       value={newBooking.source}
                       onChange={(e) => setNewBooking({ ...newBooking, source: e.target.value })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-slate-200 outline-none focus:border-yellow-400"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-slate-200 outline-none focus:border-yellow-400 cursor-pointer"
                     >
                       <option value="PHONE">📞 По телефону</option>
                       <option value="INSTAGRAM">📸 Instagram</option>
-                      <option value="BOT">📱 Telegram App</option>
-                      <option value="DRIVER">🚘 Водій</option>
+                      <option value="WEB">🌐 Диспетчер / Веб</option>
                     </select>
                   </div>
 
