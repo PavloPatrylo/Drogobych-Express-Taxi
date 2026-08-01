@@ -1655,6 +1655,7 @@ async def drivers_cash_reconciliation_use_case(
             curr += timedelta(days=1)
 
     for driver in drivers:
+        # Для контролю каси отримуємо ТІЛЬКИ ЗАВЕРШЕНІ та ЗАКРИТІ рейси (COMPLETED / CLOSED)
         trips_stmt = (
             select(Trip, FromLoc.name, ToLoc.name)
             .options(selectinload(Trip.closed_by))
@@ -1663,7 +1664,7 @@ async def drivers_cash_reconciliation_use_case(
             .where(Trip.driver_id == driver.id)
             .where(Trip.departure_time >= start_dt)
             .where(Trip.departure_time <= end_dt)
-            .where(Trip.status != TripStatus.CANCELLED)
+            .where(Trip.status.in_([TripStatus.COMPLETED, TripStatus.CLOSED]))
             .order_by(Trip.departure_time)
         )
         trips_rows = (await db.execute(trips_stmt)).all()
@@ -1711,7 +1712,8 @@ async def drivers_cash_reconciliation_use_case(
             if capacity > 0:
                 routes_map[route_name]["occupancies"].append(occ_pct)
 
-            t_cash = float(trip.submitted_cash) if trip.submitted_cash is not None else t_expected
+            # Для зданої каси: якщо значення Null, то для фінансово закритого рейсу вважаємо 0.0
+            t_cash = float(trip.submitted_cash) if trip.submitted_cash is not None else 0.0
             t_card = float(trip.submitted_card) if trip.submitted_card is not None else 0.0
 
             actual_submitted_cash += t_cash
@@ -1749,14 +1751,20 @@ async def drivers_cash_reconciliation_use_case(
                     chart_buckets[d_label]["trips"] += 1
                     chart_buckets[d_label]["passengers"] += t_passengers
 
+            t_submitted_total = t_cash + t_card
+            t_discrepancy = t_submitted_total - t_expected
+
             trip_details.append({
                 "trip_id": trip.id,
                 "time": dep_kyiv.strftime("%H:%M"),
+                "date": dep_kyiv.strftime("%d.%m.%Y"),
                 "route": f"{from_name} → {to_name}",
                 "status": trip.status.name,
                 "expected_revenue": t_expected,
                 "submitted_cash": t_cash,
                 "submitted_card": t_card,
+                "total_submitted": t_submitted_total,
+                "discrepancy": t_discrepancy,
             })
 
         total_submitted = actual_submitted_cash + actual_submitted_card

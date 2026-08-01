@@ -489,6 +489,7 @@ export default function FinancePage() {
 
   // Confirm Modal State
   const [selectedDriver, setSelectedDriver] = useState(null);
+  const [detailDriver, setDetailDriver] = useState(null);
   const [confirmForm, setConfirmForm] = useState({
     received_cash: 0,
     received_card: 0,
@@ -1006,8 +1007,17 @@ export default function FinancePage() {
                             <tr key={d.driver_id} className="hover:bg-slate-800/30 transition-colors">
                               {/* Driver Info */}
                               <td className="py-3.5 px-3">
-                                <div className="font-bold text-slate-100 text-sm">{d.driver_name}</div>
-                                <div className="text-[11px] font-mono text-slate-400 flex items-center gap-2">
+                                <div
+                                  onClick={() => setDetailDriver(d)}
+                                  className="font-bold text-slate-100 text-sm hover:text-yellow-400 cursor-pointer flex items-center gap-1.5"
+                                  title="Натисніть для перегляду деталізації по кожному рейсу"
+                                >
+                                  <span>{d.driver_name}</span>
+                                  <span className="text-[10px] text-yellow-400/80 bg-yellow-400/10 px-1.5 py-0.5 rounded border border-yellow-400/20">
+                                    🔍 Рейси ({d.trips?.length || 0})
+                                  </span>
+                                </div>
+                                <div className="text-[11px] font-mono text-slate-400 flex items-center gap-2 mt-0.5">
                                   <span>{d.driver_phone}</span>
                                   {d.telegram_id && (
                                     <a
@@ -1089,7 +1099,15 @@ export default function FinancePage() {
                               </td>
 
                               {/* Action button */}
-                              <td className="py-3.5 px-3 text-right">
+                              <td className="py-3.5 px-3 text-right space-x-1.5">
+                                <button
+                                  onClick={() => setDetailDriver(d)}
+                                  className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-xs inline-flex items-center gap-1 transition-all cursor-pointer"
+                                  title="Деталізація каси по кожному рейсу водія"
+                                >
+                                  <span>🔍 Деталі</span>
+                                </button>
+
                                 {d.completed_trips > 0 && (
                                   <button
                                     onClick={() => handleOpenConfirmModal(d)}
@@ -1310,6 +1328,145 @@ export default function FinancePage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* DRIVER TRIPS DETAIL MODAL */}
+      {detailDriver && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
+          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="font-display text-lg uppercase tracking-wider text-slate-100 flex items-center gap-2">
+                  <Bus size={20} className="text-yellow-400" />
+                  <span>🔍 Деталізація каси по рейсах: {detailDriver.driver_name}</span>
+                </h3>
+                <p className="text-xs text-slate-400">{detailDriver.driver_phone} • Звітний період: {data?.date}</p>
+              </div>
+              <button
+                onClick={() => setDetailDriver(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Summary KPI Strip */}
+            <div className="grid grid-cols-3 gap-3 bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs">
+              <div>
+                <div className="text-slate-400 font-medium">Розрахункова каса:</div>
+                <div className="font-mono font-bold text-yellow-400 text-sm">{detailDriver.expected_total} ₴</div>
+              </div>
+              <div>
+                <div className="text-slate-400 font-medium">Фактично здано:</div>
+                <div className="font-mono font-bold text-emerald-400 text-sm">{detailDriver.total_submitted} ₴</div>
+              </div>
+              <div>
+                <div className="text-slate-400 font-medium">Сумарне відхилення:</div>
+                <div className={`font-mono font-bold text-sm ${detailDriver.discrepancy < 0 ? 'text-red-400' : detailDriver.discrepancy > 0 ? 'text-emerald-400' : 'text-slate-200'}`}>
+                  {detailDriver.discrepancy < 0 ? `🔴 ${detailDriver.discrepancy} ₴` : detailDriver.discrepancy > 0 ? `🟢 +${detailDriver.discrepancy} ₴` : '⚪ 0 ₴'}
+                </div>
+              </div>
+            </div>
+
+            {/* Per-trip breakdown table */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold uppercase text-slate-300 tracking-wider">
+                📋 Перелік закритих / завершених рейсів ({detailDriver.trips?.length || 0}):
+              </h4>
+
+              {(!detailDriver.trips || detailDriver.trips.length === 0) ? (
+                <div className="p-4 text-center text-xs text-slate-500 bg-slate-950 rounded-xl border border-slate-800">
+                  Завершених рейсів за цей період не знайдено
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 font-semibold uppercase text-[10px] tracking-wider bg-slate-950">
+                        <th className="py-2.5 px-3">Час / Маршрут</th>
+                        <th className="py-2.5 px-3">Статус</th>
+                        <th className="py-2.5 px-3">Очікувано</th>
+                        <th className="py-2.5 px-3">Здано</th>
+                        <th className="py-2.5 px-3 text-right">Різниця / Недостача</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-medium">
+                      {detailDriver.trips.map((t, idx) => {
+                        const tSubmitted = (t.submitted_cash || 0) + (t.submitted_card || 0);
+                        const tDiff = t.discrepancy !== undefined ? t.discrepancy : (tSubmitted - t.expected_revenue);
+
+                        return (
+                          <tr key={idx} className="hover:bg-slate-800/30">
+                            <td className="py-3 px-3">
+                              <div className="font-bold text-slate-100 flex items-center gap-1.5">
+                                <span className="font-mono text-yellow-400">{t.time}</span>
+                                <span>{t.route}</span>
+                              </div>
+                              <div className="text-[10px] text-slate-500">{t.date}</div>
+                            </td>
+                            <td className="py-3 px-3">
+                              {t.status === 'CLOSED' ? (
+                                <span className="bg-purple-500/10 text-purple-400 border border-purple-500/20 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                                  🔒 Закрито
+                                </span>
+                              ) : (
+                                <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                                  ✅ Завершено
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 font-mono font-bold text-yellow-400">
+                              {t.expected_revenue} ₴
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-200">
+                              <div>💵 {t.submitted_cash || 0} ₴</div>
+                              {t.submitted_card > 0 && <div className="text-sky-400 text-[10px]">💳 {t.submitted_card} ₴</div>}
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              {tDiff < 0 ? (
+                                <span className="font-mono font-bold text-red-400 bg-red-500/10 px-2 py-1 rounded-md border border-red-500/20">
+                                  🔴 {tDiff} ₴ (Недостача)
+                                </span>
+                              ) : tDiff > 0 ? (
+                                <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-md border border-emerald-500/20">
+                                  🟢 +{tDiff} ₴ (Перездача)
+                                </span>
+                              ) : (
+                                <span className="font-mono text-slate-400">⚪ 0 ₴</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+              <button
+                onClick={() => setDetailDriver(null)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs cursor-pointer hover:bg-slate-700 transition-colors"
+              >
+                Закрити
+              </button>
+              <button
+                onClick={() => {
+                  const dr = detailDriver;
+                  setDetailDriver(null);
+                  handleOpenConfirmModal(dr);
+                }}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 text-slate-950 font-bold text-xs uppercase tracking-wider shadow-md cursor-pointer flex items-center gap-2"
+              >
+                <Handshake size={16} />
+                <span>Прийняти касу у цього водія</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

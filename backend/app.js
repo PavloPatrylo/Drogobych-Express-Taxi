@@ -4,15 +4,25 @@ document.addEventListener('DOMContentLoaded', () => {
     tg.expand();
     tg.setHeaderColor("#facc15");
     
-    const urlParams = new URLSearchParams(window.location.search);
-    const paramTgId = urlParams.get('tg_id');
-
-    let telegramId = tg.initDataUnsafe?.user?.id || (paramTgId ? Number(paramTgId) : null);
-    if (telegramId) {
-        localStorage.setItem('express_taxi_tg_id', telegramId);
-    } else {
-        telegramId = Number(localStorage.getItem('express_taxi_tg_id')) || 1685900931;
+    let parsedId = tg.initDataUnsafe?.user?.id;
+    if (!parsedId || isNaN(Number(parsedId))) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const paramTgId = urlParams.get('tg_id');
+        if (paramTgId && !isNaN(Number(paramTgId))) {
+            parsedId = Number(paramTgId);
+        } else {
+            const savedId = localStorage.getItem('express_taxi_tg_id');
+            if (savedId && !isNaN(Number(savedId))) {
+                parsedId = Number(savedId);
+            } else {
+                parsedId = 1685900931;
+            }
+        }
     }
+
+    let telegramId = Number(parsedId);
+    if (isNaN(telegramId)) telegramId = 1685900931;
+    localStorage.setItem('express_taxi_tg_id', telegramId);
     let fallbackName = tg.initDataUnsafe?.user?.first_name || "Користувач";
 
     const API_URL = window.location.origin + '/api';

@@ -42,9 +42,8 @@ def get_registration_kb():
     )
 
 def get_main_menu_kb(telegram_id: int = None):
-    url = f"{WEB_APP_URL}?tg_id={telegram_id}" if telegram_id else WEB_APP_URL
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚕 Запустити Express Taxi", web_app=WebAppInfo(url=url))]
+        [InlineKeyboardButton(text="🚕 Запустити Express Taxi", web_app=WebAppInfo(url=WEB_APP_URL))]
     ])
 
 # --- 2. Обробка команди /start ---

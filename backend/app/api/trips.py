@@ -8,6 +8,7 @@ from sqlalchemy.orm import aliased
 from datetime import datetime, timezone
 
 from app.db.database import async_session_maker
+from app.websocket_manager import manager
 from app.schemas.trip import TripReadPassenger, LocationRead
 
 from app.schemas.booking import TripManifest, TripStatusUpdate
@@ -232,10 +233,10 @@ async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatus
         current_status = trip.status.name if hasattr(trip.status, 'name') else trip.status
         requested_status = payload.status
 
-        # 3. ЛОГІКА ДИСПЕТЧЕРА: Скасування рейсу
+        # 3. ЛОГІКА СКАСУВАННЯ (Диспетчер або Адмін)
         if requested_status == 'CANCELLED':
-            if actor.role != UserRole.DISPATCHER:
-                raise HTTPException(status_code=403, detail="Тільки диспетчер має право скасовувати рейс")
+            if actor.role not in [UserRole.DISPATCHER, UserRole.ADMIN]:
+                raise HTTPException(status_code=403, detail="Тільки диспетчер або адмін мають право скасовувати рейс")
             
             trip.status = TripStatus.CANCELLED
             
@@ -248,16 +249,18 @@ async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatus
             for b in bookings_to_cancel:
                 b.status = BookingStatus.CANCELLED
                 
-        # 4. ЛОГІКА ВОДІЯ: Звичайний або прискорений рух/закриття рейсу
+        # 4. ЛОГІКА РУХУ / ЗМІНИ СТАТУСУ (Водій, Диспетчер або Адмін)
         else:
-            if actor.role != UserRole.DRIVER or trip.driver_id != actor.id:
-                raise HTTPException(status_code=403, detail="Це не ваш рейс або ви не водій")
+            is_staff = actor.role in [UserRole.DISPATCHER, UserRole.ADMIN]
+            is_assigned_driver = (actor.role == UserRole.DRIVER and trip.driver_id == actor.id)
+            
+            if not (is_staff or is_assigned_driver):
+                raise HTTPException(status_code=403, detail="Це не ваш рейс або у вас немає прав для зміни його статусу")
 
-            # Дозволяємо водію переводити рейс у COMPLETED з будь-якого стану (SCHEDULED, BOARDING, ACTIVE)
             valid_driver_statuses = ['SCHEDULED', 'BOARDING', 'ACTIVE']
 
             if requested_status == 'COMPLETED':
-                if current_status not in valid_driver_statuses:
+                if current_status not in valid_driver_statuses and not is_staff:
                     raise HTTPException(status_code=400, detail="Цей рейс вже закритий або не може бути завершений")
                 trip.status = TripStatus.COMPLETED
                 
@@ -275,8 +278,9 @@ async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatus
                     'BOARDING': 'ACTIVE',
                     'ACTIVE': 'COMPLETED'
                 }
-                if current_status not in valid_transitions or valid_transitions[current_status] != requested_status:
-                    raise HTTPException(status_code=400, detail="Ця дія недоступна")
+                if not is_staff:
+                    if current_status not in valid_transitions or valid_transitions[current_status] != requested_status:
+                        raise HTTPException(status_code=400, detail="Ця дія недоступна")
                 
                 trip.status = TripStatus[requested_status]
 
