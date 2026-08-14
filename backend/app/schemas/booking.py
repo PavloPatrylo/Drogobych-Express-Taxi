@@ -6,6 +6,7 @@ class BookingCreate(BaseModel):
     trip_id: int
     telegram_id: int
     requested_seats: int = 1
+    payment_method: Optional[str] = "CASH"
 
 # === НОВА СХЕМА ДЛЯ ПЕРЕГЛЯДУ КВИТКІВ (UC-P4) ===
 class BookingRead(BaseModel):
@@ -13,6 +14,7 @@ class BookingRead(BaseModel):
     status: str
     passengers_count: int
     amount_paid: float
+    payment_method: str = "CASH"
     trip_departure_time: datetime
     from_location: str
     to_location: str
@@ -30,6 +32,7 @@ class PassengerInfo(BaseModel):
     seats: int
     status: str
     amount_paid: float
+    payment_method: str = "CASH"
     booking_type: str  # ДОДАНО: SEATED, STANDING або PARCEL
 
 class TripManifest(BaseModel):

@@ -1165,6 +1165,102 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // --- WEBSOCKET REAL-TIME CONNECTIVITY ---
+    let socket = null;
+    let socketReconnectTimer = null;
+
+    function initWebSocket() {
+        if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
+            return;
+        }
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws?telegram_id=${telegramId}`;
+
+        try {
+            socket = new WebSocket(wsUrl);
+        } catch (err) {
+            console.error("❌ WebSocket connection error:", err);
+            scheduleReconnect();
+            return;
+        }
+
+        socket.onopen = () => {
+            console.log("🟢 WebSocket z'ednannya vstanovleno (tg_id=" + telegramId + ")");
+            if (socketReconnectTimer) {
+                clearTimeout(socketReconnectTimer);
+                socketReconnectTimer = null;
+            }
+        };
+
+        socket.onmessage = (event) => {
+            try {
+                const payload = JSON.parse(event.data);
+                handleSocketEvent(payload);
+            } catch (e) {
+                console.error("❌ Error parsing WS message:", e);
+            }
+        };
+
+        socket.onclose = () => {
+            console.warn("🔴 WebSocket z'ednannya rozirvano. Reconnecting in 4s...");
+            scheduleReconnect();
+        };
+
+        socket.onerror = (err) => {
+            console.error("❌ WebSocket error:", err);
+            try { socket.close(); } catch (e) {}
+        };
+    }
+
+    function scheduleReconnect() {
+        if (!socketReconnectTimer) {
+            socketReconnectTimer = setTimeout(() => {
+                socketReconnectTimer = null;
+                initWebSocket();
+            }, 4000);
+        }
+    }
+
+    function handleSocketEvent(payload) {
+        if (!payload || !payload.event) return;
+        const { event, data } = payload;
+        console.log("🔔 WS event received:", event, data);
+
+        if (event === "TRIP_MUTATED" || event === "BOOKING_MUTATED") {
+            // Оновлюємо пошук пасажира (якщо активний)
+            if (viewSearch && !viewSearch.classList.contains('hidden')) {
+                if (fromSelect && fromSelect.value && toSelect && toSelect.value && dateInput && dateInput.value) {
+                    if (searchBtn && !searchBtn.disabled) {
+                        searchBtn.click();
+                    }
+                }
+            }
+            // Оновлюємо квитки пасажира (якщо активні)
+            if (viewTrips && !viewTrips.classList.contains('hidden')) {
+                if (typeof fetchMyTickets === 'function') fetchMyTickets();
+            }
+            // Оновлюємо панель водія
+            if (viewDriver && !viewDriver.classList.contains('hidden')) {
+                if (driverTripsView && !driverTripsView.classList.contains('hidden')) {
+                    if (typeof fetchDriverManifest === 'function') fetchDriverManifest();
+                }
+                if (driverScheduleView && !driverScheduleView.classList.contains('hidden')) {
+                    if (typeof fetchDriverSchedule === 'function') fetchDriverSchedule();
+                }
+                if (driverSummaryView && !driverSummaryView.classList.contains('hidden')) {
+                    if (typeof fetchDriverSummary === 'function') fetchDriverSummary();
+                }
+            }
+        } else if (event === "CASH_CONFIRMED") {
+            if (viewDriver && !viewDriver.classList.contains('hidden')) {
+                if (driverSummaryView && !driverSummaryView.classList.contains('hidden')) {
+                    if (typeof fetchDriverSummary === 'function') fetchDriverSummary();
+                }
+            }
+        }
+    }
+
     // --- СТАРТ ---
     fetchUserData();
+    initWebSocket();
 });

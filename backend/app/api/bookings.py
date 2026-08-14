@@ -5,7 +5,7 @@ from sqlalchemy.orm import aliased
 from datetime import datetime, timezone, timedelta
 
 from app.db.database import async_session_maker
-from app.db.models import Trip, Booking, User, UserRole, BookingType, BookingSource, BookingStatus, Location
+from app.db.models import Trip, Booking, User, UserRole, BookingType, BookingSource, BookingStatus, Location, PaymentMethod
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, StandingBookingCreate, ParcelBookingCreate
 from app.services.admin_use_cases import refresh_user_stats
 from app.websocket_manager import manager
@@ -34,7 +34,8 @@ async def create_booking(booking_in: BookingCreate):
 
         # Перевірка: чи не виїхав рейс раніше поточного часу
         now_kyiv = datetime.now(timezone.utc)
-        if trip.departure_time < now_kyiv:
+        dep_time = trip.departure_time.replace(tzinfo=timezone.utc) if (trip.departure_time and trip.departure_time.tzinfo is None) else trip.departure_time
+        if dep_time and dep_time < now_kyiv:
             raise HTTPException(status_code=400, detail="Цей рейс вже виїхав. Бронювання минулих рейсів неможливе!")
 
         # 3. Рахуємо вже зайняті місця
@@ -68,6 +69,9 @@ async def create_booking(booking_in: BookingCreate):
 
 
 
+        pm_val = str(getattr(booking_in, "payment_method", "CASH") or "CASH").upper()
+        pm = PaymentMethod.CARD if pm_val == "CARD" else PaymentMethod.CASH
+
         # 5. Створюємо окремі бронювання для кожного місця (Згідно з логікою 1 квиток = 1 місце)
         for _ in range(booking_in.requested_seats):
             new_booking = Booking(
@@ -77,6 +81,7 @@ async def create_booking(booking_in: BookingCreate):
                 booking_type=BookingType.SEATED,
                 source=BookingSource.BOT,
                 status=BookingStatus.RESERVED,
+                payment_method=pm,
                 passengers_count=1,            # 👈 ЗАВЖДИ 1 місце на один квиток
                 amount_paid=trip.price_seated  # 👈 Ціна вказується за 1 місце
             )
@@ -236,7 +241,19 @@ async def add_standing_passenger(payload: StandingBookingCreate):
         if current_status not in ["BOARDING", "ACTIVE"]:
             raise HTTPException(status_code=400, detail="Додавати стоячих можна лише під час посадки або в дорозі")
 
-        # 4. Перевіряємо ліміт стоячих місць
+        # 4. Перевіряємо, чи є вільні сидячі місця
+        seated_type = BookingType.SEATED if hasattr(BookingType, 'SEATED') else "SEATED"
+        seated_result = await session.execute(
+            select(func.sum(Booking.passengers_count))
+            .where(Booking.trip_id == trip.id)
+            .where(Booking.booking_type == seated_type)
+            .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+        )
+        booked_seated = seated_result.scalar() or 0
+        if (trip.seats_limit_snapshot - booked_seated) > 0:
+            raise HTTPException(status_code=400, detail="Не можна додати стоячого, поки є вільні сидячі місця!")
+
+        # Перевіряємо ліміт стоячих місць
         standing_type = BookingType.STANDING if hasattr(BookingType, 'STANDING') else "STANDING"
         
         result = await session.execute(

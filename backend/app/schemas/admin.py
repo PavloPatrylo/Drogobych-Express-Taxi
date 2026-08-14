@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 from typing import Optional, List
 from datetime import datetime
-from app.db.models import TripStatus, BookingStatus, BookingSource, BookingType, DayType, UserRole
+from app.db.models import TripStatus, BookingStatus, BookingSource, BookingType, DayType, UserRole, PaymentMethod
 
 # ══════════════════════════════════════════════
 # СХЕМИ ДЛЯ АВТОПАРКУ (VEHICLES)
@@ -93,6 +93,7 @@ class BookingResponse(BaseModel):
     source: BookingSource
     passengers_count: int
     amount_paid: float
+    payment_method: PaymentMethod = PaymentMethod.CASH
     passenger_name: Optional[str] = None 
     passenger_phone: Optional[str] = None
     
@@ -168,6 +169,7 @@ class AdminBookingResponse(BaseModel):
     status: BookingStatus
     passengers_count: int
     amount_paid: float
+    payment_method: PaymentMethod = PaymentMethod.CASH
     comment: Optional[str] = None
     created_at: Optional[datetime] = None
     passenger_name: Optional[str] = None
@@ -188,6 +190,7 @@ class TripManifestDetailResponse(BaseModel):
 class AdminManifestBookingCreate(BaseModel):
     booking_type: BookingType = BookingType.SEATED
     source: BookingSource = BookingSource.PHONE
+    payment_method: PaymentMethod = PaymentMethod.CASH
     phone: str
     full_name: Optional[str] = None
     seats: int = Field(1, gt=0)
@@ -295,6 +298,7 @@ class AdminOfflineBookingCreate(BaseModel):
     phone: str
     full_name: Optional[str] = None
     source: BookingSource = BookingSource.PHONE
+    payment_method: PaymentMethod = PaymentMethod.CASH
     seats: int = Field(1, gt=0)
 
     @field_validator("phone")
@@ -392,3 +396,32 @@ class ConfirmDriverCashRequest(BaseModel):
     received_cash: float = 0.0
     received_card: float = 0.0
     comment: Optional[str] = None
+
+
+class DriverReportItem(BaseModel):
+    driver_id: int
+    driver_name: str
+    driver_phone: Optional[str] = None
+    trips_count: int = 0
+    completed_trips_count: int = 0
+    total_passengers: int = 0
+    cash_revenue: float = 0.0
+    card_revenue: float = 0.0
+    total_revenue: float = 0.0
+    avg_revenue_per_trip: float = 0.0
+
+
+class VehicleReportItem(BaseModel):
+    vehicle_id: int
+    plate_number: str
+    model: str
+    total_seats: int
+    total_standing: int
+    trips_count: int = 0
+    total_passengers: int = 0
+    total_seats_capacity: int = 0
+    occupancy_rate: float = 0.0
+    cash_revenue: float = 0.0
+    card_revenue: float = 0.0
+    total_revenue: float = 0.0
+    avg_revenue_per_trip: float = 0.0

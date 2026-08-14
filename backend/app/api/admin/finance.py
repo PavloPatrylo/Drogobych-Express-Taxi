@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import check_admin_access
 from app.db.database import get_db
 from app.db.models import User
-from app.schemas.admin import AdminCloseTripRequest, AdminTripResponse, ConfirmDriverCashRequest
+from app.schemas.admin import AdminCloseTripRequest, AdminTripResponse, ConfirmDriverCashRequest, DriverReportItem, VehicleReportItem
 from app.services import admin_use_cases
 
 router = APIRouter(prefix="/finance", tags=["Admin Finance"])
@@ -19,6 +19,32 @@ async def get_finance_summary(
     current_user: User = Depends(check_admin_access),
 ):
     return await admin_use_cases.finance_summary(db, date_from, date_to)
+
+
+@router.get("/reports/drivers", response_model=list[DriverReportItem])
+async def get_drivers_report(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    driver_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    return await admin_use_cases.driver_report_use_case(
+        db, date_from=date_from, date_to=date_to, driver_id=driver_id
+    )
+
+
+@router.get("/reports/vehicles", response_model=list[VehicleReportItem])
+async def get_vehicles_report(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    vehicle_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    return await admin_use_cases.vehicle_report_use_case(
+        db, date_from=date_from, date_to=date_to, vehicle_id=vehicle_id
+    )
 
 
 @router.get("/reconciliation")

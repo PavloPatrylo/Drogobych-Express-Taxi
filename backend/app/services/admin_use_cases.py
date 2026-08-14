@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -30,7 +31,9 @@ from app.db.models import (
     SystemConfig,
     ScheduleTemplate,
     DayType,
+    PaymentMethod,
 )
+from app.websocket_manager import manager
 from app.schemas.admin import (
     AdminAuditLogResponse,
     AdminBookingResponse,
@@ -49,6 +52,8 @@ from app.schemas.admin import (
     TripManifestDetailResponse,
     AdminManifestBookingCreate,
     AdminBookingStatusUpdate,
+    DriverReportItem,
+    VehicleReportItem,
 )
 
 
@@ -203,6 +208,14 @@ async def create_trip(db: AsyncSession, payload: AdminTripCreate, actor: User | 
 
     departure = _combine_date_time(payload.date, payload.departure_time)
     arrival = _combine_date_time(payload.date, payload.arrival_time)
+    
+    now_kyiv = datetime.now(KYIV_TZ)
+    if departure and departure < now_kyiv:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неможливо створити рейс на дату та час, які вже минули.",
+        )
+
     from_location, to_location = await _locations_for_route(db, payload.route)
 
     conflict = await db.execute(
@@ -377,7 +390,7 @@ def vehicle_to_admin(vehicle: Vehicle) -> AdminVehicleResponse:
 
 
 def user_to_admin(user: User) -> AdminUserResponse:
-    stats = getattr(user, "stats", None)
+    stats = user.__dict__.get("stats")
     total_trips = stats.total_trips if stats else 0
     total_noshows = stats.total_noshows if stats else 0
     trust_score = stats.trust_score_cached if stats else 100
@@ -452,6 +465,7 @@ def trip_to_admin(trip: Trip) -> AdminTripResponse:
 
 
 def booking_to_admin(booking: Booking, passenger: User | None = None) -> AdminBookingResponse:
+    pm = getattr(booking, "payment_method", PaymentMethod.CASH) or PaymentMethod.CASH
     return AdminBookingResponse(
         id=booking.id,
         trip_id=booking.trip_id,
@@ -460,6 +474,7 @@ def booking_to_admin(booking: Booking, passenger: User | None = None) -> AdminBo
         booking_type=booking.booking_type,
         source=booking.source,
         status=booking.status,
+        payment_method=pm,
         passengers_count=booking.passengers_count,
         amount_paid=_as_float(booking.amount_paid),
         comment=booking.comment,
@@ -629,6 +644,14 @@ async def create_trip(db: AsyncSession, payload: AdminTripCreate, actor: User | 
 
     departure = _combine_date_time(payload.date, payload.departure_time)
     arrival = _combine_date_time(payload.date, payload.arrival_time)
+
+    now_kyiv = datetime.now(KYIV_TZ)
+    if departure and departure < now_kyiv:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неможливо створити рейс на дату та час, які вже минули.",
+        )
+
     from_location, to_location = await _locations_for_route(db, payload.route)
 
     conflict = await db.execute(
@@ -673,6 +696,7 @@ async def create_trip(db: AsyncSession, payload: AdminTripCreate, actor: User | 
     )
     try:
         await db.commit()
+        await manager.broadcast("TRIP_MUTATED", {"trip_id": trip.id})
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
@@ -723,6 +747,14 @@ async def update_trip(
 
     departure = _combine_date_time(payload.date, payload.departure_time)
     arrival = _combine_date_time(payload.date, payload.arrival_time)
+
+    now_kyiv = datetime.now(KYIV_TZ)
+    if departure and departure < now_kyiv:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неможливо перенести рейс на дату та час, які вже минули.",
+        )
+
     from_location, to_location = await _locations_for_route(db, payload.route)
 
     # Check conflict, excluding the current trip
@@ -770,6 +802,30 @@ async def update_trip(
         trip.seats_limit_snapshot = vehicle.total_seats
         trip.standing_limit_snapshot = vehicle.total_standing
 
+    # Prevent changing trip prices if there are active bookings
+    new_price_seated = float(payload.price_seated)
+    new_price_standing = float(payload.price_standing)
+    new_price_parcel = float(payload.price_parcel) if payload.price_parcel is not None else _as_float(getattr(trip, 'price_parcel', 100.0) or 100.0)
+
+    cur_price_seated = _as_float(trip.price_seated)
+    cur_price_standing = _as_float(trip.price_standing)
+    cur_price_parcel = _as_float(getattr(trip, 'price_parcel', 100.0) or 100.0)
+
+    if (new_price_seated != cur_price_seated or 
+        new_price_standing != cur_price_standing or 
+        new_price_parcel != cur_price_parcel):
+        booked_res = await db.execute(
+            select(func.count(Booking.id)).where(
+                Booking.trip_id == trip.id,
+                Booking.status.in_(ACTIVE_BOOKING_STATUSES),
+            )
+        )
+        if (booked_res.scalar() or 0) > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Неможливо змінити ціну рейсу, на який вже є заброньовані місця. Якщо ціна вказана помилково, скасуйте рейс та створіть новий.",
+            )
+
     trip.driver_id = driver.id
     trip.vehicle_id = vehicle.id
     trip.from_location_id = from_location.id
@@ -792,6 +848,7 @@ async def update_trip(
     )
     try:
         await db.commit()
+        await manager.broadcast("TRIP_MUTATED", {"trip_id": trip.id})
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
@@ -929,6 +986,7 @@ async def update_trip_status(
         message=f"Changed status from {previous_status.value} to {new_status.value}",
     )
     await db.commit()
+    await manager.broadcast("TRIP_MUTATED", {"trip_id": trip.id})
     await db.refresh(trip, attribute_names=["from_location", "to_location", "closed_by", "driver", "vehicle"])
     return trip_to_admin(trip)
 
@@ -1032,6 +1090,7 @@ async def update_trip_assign_use_case(
         message=f"Updated assignment for trip #{trip.id}: Driver={driver.full_name}, Vehicle={vehicle.plate_number}",
     )
     await db.commit()
+    await manager.broadcast("TRIP_MUTATED", {"trip_id": trip.id})
     await db.refresh(trip, attribute_names=["from_location", "to_location", "closed_by", "driver", "vehicle"])
     return trip_to_admin(trip)
 
@@ -1096,6 +1155,7 @@ async def close_trip(
     )
 
     await db.commit()
+    await manager.broadcast("TRIP_MUTATED", {"trip_id": trip.id})
     await db.refresh(trip, attribute_names=["from_location", "to_location", "closed_by", "driver", "vehicle"])
     return trip_to_admin(trip)
 
@@ -1108,6 +1168,7 @@ async def create_offline_booking(
     full_name: str | None,
     source: BookingSource,
     seats: int,
+    payment_method: PaymentMethod = PaymentMethod.CASH,
 ) -> AdminBookingResponse:
     if actor.role not in (UserRole.ADMIN, UserRole.DISPATCHER):
         raise HTTPException(
@@ -1163,6 +1224,7 @@ async def create_offline_booking(
     if trip.seats_limit_snapshot - booked_seats < seats:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not enough seats")
 
+    pm = payment_method or PaymentMethod.CASH
     booking = Booking(
         trip_id=trip.id,
         passenger_id=passenger.id,
@@ -1170,6 +1232,7 @@ async def create_offline_booking(
         booking_type=BookingType.SEATED,
         source=source,
         status=BookingStatus.RESERVED,
+        payment_method=pm,
         passengers_count=seats,
         amount_paid=_as_float(trip.price_seated) * seats,
     )
@@ -1187,6 +1250,7 @@ async def create_offline_booking(
         message=f"Offline booking for {seats} seat(s)",
     )
     await db.commit()
+    await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
     await db.refresh(booking)
     return booking_to_admin(booking, passenger)
 
@@ -1235,6 +1299,7 @@ async def cancel_booking(
         source="WEB",
     )
     await db.commit()
+    await manager.broadcast("BOOKING_MUTATED", {"trip_id": booking.trip_id})
     await db.refresh(booking)
     return booking_to_admin(booking, passenger)
 
@@ -1278,11 +1343,15 @@ async def trip_finance_stats(db: AsyncSession, trip_id: int) -> dict:
     result = await db.execute(select(Booking).where(Booking.trip_id == trip_id))
     bookings = result.scalars().all()
     billable = [b for b in bookings if b.status not in (BookingStatus.CANCELLED, BookingStatus.NOSHOW)]
+    cash_revenue = sum(_as_float(b.amount_paid) for b in billable if getattr(b, "payment_method", PaymentMethod.CASH) == PaymentMethod.CASH or str(getattr(b, "payment_method", "CASH")) == "CASH")
+    card_revenue = sum(_as_float(b.amount_paid) for b in billable if getattr(b, "payment_method", PaymentMethod.CASH) == PaymentMethod.CARD or str(getattr(b, "payment_method", "CARD")) == "CARD")
     return {
         "seated": sum(b.passengers_count for b in billable if b.booking_type == BookingType.SEATED),
         "standing": sum(b.passengers_count for b in billable if b.booking_type == BookingType.STANDING),
         "parcels": sum(b.passengers_count for b in billable if b.booking_type == BookingType.PARCEL),
-        "revenue": sum(_as_float(b.amount_paid) for b in billable),
+        "cash_revenue": cash_revenue,
+        "card_revenue": card_revenue,
+        "revenue": cash_revenue + card_revenue,
     }
 
 
@@ -1300,18 +1369,182 @@ async def finance_summary(
         trips = [t for t in trips if t.date <= date_to]
 
     filtered_trip_ids = {t.id for t in trips}
-    bookings = [b for b in bookings if b.trip_id in filtered_trip_ids]
+    billable_bookings = [
+        b for b in bookings 
+        if b.trip_id in filtered_trip_ids and b.status not in (BookingStatus.CANCELLED, BookingStatus.NOSHOW)
+    ]
 
-    total_revenue = sum(
-        booking.amount_paid
-        for booking in bookings
-        if booking.status not in (BookingStatus.CANCELLED, BookingStatus.NOSHOW)
+    total_cash_revenue = sum(
+        _as_float(b.amount_paid) for b in billable_bookings 
+        if getattr(b, "payment_method", PaymentMethod.CASH) == PaymentMethod.CASH or str(getattr(b, "payment_method", "CASH")) == "CASH"
     )
+    total_card_revenue = sum(
+        _as_float(b.amount_paid) for b in billable_bookings 
+        if getattr(b, "payment_method", PaymentMethod.CASH) == PaymentMethod.CARD or str(getattr(b, "payment_method", "CARD")) == "CARD"
+    )
+    total_revenue = total_cash_revenue + total_card_revenue
     return {
         "total_revenue": total_revenue,
+        "total_cash_revenue": total_cash_revenue,
+        "total_card_revenue": total_card_revenue,
         "pending_close": [trip for trip in trips if trip.status == TripStatus.COMPLETED],
         "closed_trips": [trip for trip in trips if trip.status == TripStatus.CLOSED],
     }
+
+
+async def driver_report_use_case(
+    db: AsyncSession,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    driver_id: int | None = None,
+) -> list[DriverReportItem]:
+    drivers_query = select(User).where(User.role == UserRole.DRIVER)
+    if driver_id:
+        drivers_query = drivers_query.where(User.id == driver_id)
+    res_drivers = await db.execute(drivers_query)
+    drivers = res_drivers.scalars().all()
+
+    trips_query = (
+        select(Trip)
+        .options(selectinload(Trip.bookings), selectinload(Trip.driver))
+        .where(Trip.status != TripStatus.CANCELLED)
+    )
+    if driver_id:
+        trips_query = trips_query.where(Trip.driver_id == driver_id)
+
+    res_trips = await db.execute(trips_query)
+    all_trips = res_trips.scalars().all()
+
+    filtered_trips = []
+    for t in all_trips:
+        t_date = _date_string(t.departure_time)
+        if date_from and t_date < date_from:
+            continue
+        if date_to and t_date > date_to:
+            continue
+        filtered_trips.append(t)
+
+    report_items = []
+    for d in drivers:
+        d_trips = [t for t in filtered_trips if t.driver_id == d.id]
+        completed_count = sum(1 for t in d_trips if t.status in (TripStatus.COMPLETED, TripStatus.CLOSED))
+        
+        cash_rev = 0.0
+        card_rev = 0.0
+        passengers_cnt = 0
+
+        for t in d_trips:
+            for b in t.bookings:
+                if b.status not in (BookingStatus.CANCELLED, BookingStatus.NOSHOW):
+                    passengers_cnt += b.passengers_count
+                    amt = _as_float(b.amount_paid)
+                    pm = getattr(b, "payment_method", PaymentMethod.CASH)
+                    if pm == PaymentMethod.CARD or str(pm) == "CARD":
+                        card_rev += amt
+                    else:
+                        cash_rev += amt
+
+        tot_rev = cash_rev + card_rev
+        trips_cnt = len(d_trips)
+        avg_rev = round(tot_rev / trips_cnt, 2) if trips_cnt > 0 else 0.0
+
+        report_items.append(
+            DriverReportItem(
+                driver_id=d.id,
+                driver_name=d.full_name or d.phone or f"Водій #{d.id}",
+                driver_phone=d.phone,
+                trips_count=trips_cnt,
+                completed_trips_count=completed_count,
+                total_passengers=passengers_cnt,
+                cash_revenue=cash_rev,
+                card_revenue=card_rev,
+                total_revenue=tot_rev,
+                avg_revenue_per_trip=avg_rev,
+            )
+        )
+
+    return report_items
+
+
+async def vehicle_report_use_case(
+    db: AsyncSession,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    vehicle_id: int | None = None,
+) -> list[VehicleReportItem]:
+    veh_query = select(Vehicle)
+    if vehicle_id:
+        veh_query = veh_query.where(Vehicle.id == vehicle_id)
+    res_veh = await db.execute(veh_query)
+    vehicles = res_veh.scalars().all()
+
+    trips_query = (
+        select(Trip)
+        .options(selectinload(Trip.bookings), selectinload(Trip.vehicle))
+        .where(Trip.status != TripStatus.CANCELLED)
+    )
+    if vehicle_id:
+        trips_query = trips_query.where(Trip.vehicle_id == vehicle_id)
+
+    res_trips = await db.execute(trips_query)
+    all_trips = res_trips.scalars().all()
+
+    filtered_trips = []
+    for t in all_trips:
+        t_date = _date_string(t.departure_time)
+        if date_from and t_date < date_from:
+            continue
+        if date_to and t_date > date_to:
+            continue
+        filtered_trips.append(t)
+
+    report_items = []
+    for v in vehicles:
+        v_trips = [t for t in filtered_trips if t.vehicle_id == v.id]
+        
+        cash_rev = 0.0
+        card_rev = 0.0
+        passengers_cnt = 0
+        total_seats_capacity = sum(t.seats_limit_snapshot for t in v_trips)
+        total_seated_passengers = 0
+
+        for t in v_trips:
+            for b in t.bookings:
+                if b.status not in (BookingStatus.CANCELLED, BookingStatus.NOSHOW):
+                    passengers_cnt += b.passengers_count
+                    if b.booking_type == BookingType.SEATED:
+                        total_seated_passengers += b.passengers_count
+                    amt = _as_float(b.amount_paid)
+                    pm = getattr(b, "payment_method", PaymentMethod.CASH)
+                    if pm == PaymentMethod.CARD or str(pm) == "CARD":
+                        card_rev += amt
+                    else:
+                        cash_rev += amt
+
+        tot_rev = cash_rev + card_rev
+        trips_cnt = len(v_trips)
+        avg_rev = round(tot_rev / trips_cnt, 2) if trips_cnt > 0 else 0.0
+        occupancy = round((total_seated_passengers / total_seats_capacity) * 100, 2) if total_seats_capacity > 0 else 0.0
+
+        report_items.append(
+            VehicleReportItem(
+                vehicle_id=v.id,
+                plate_number=v.plate_number,
+                model=v.model,
+                total_seats=v.total_seats,
+                total_standing=v.total_standing,
+                trips_count=trips_cnt,
+                total_passengers=passengers_cnt,
+                total_seats_capacity=total_seats_capacity,
+                occupancy_rate=occupancy,
+                cash_revenue=cash_rev,
+                card_revenue=card_rev,
+                total_revenue=tot_rev,
+                avg_revenue_per_trip=avg_rev,
+            )
+        )
+
+    return report_items
 
 
 async def dashboard(db: AsyncSession) -> dict:
@@ -1363,7 +1596,9 @@ async def refresh_user_stats(db: AsyncSession, user_id: int):
             current_streak = 0
         elif booking.status == BookingStatus.CANCELLED:
             if booking.created_at and trip.departure_time:
-                diff = (trip.departure_time - booking.created_at).total_seconds()
+                dep_dt = trip.departure_time.replace(tzinfo=None)
+                created_dt = booking.created_at.replace(tzinfo=None)
+                diff = (dep_dt - created_dt).total_seconds()
                 if diff >= 7200:
                     early_cancellations += 1
 
@@ -1381,6 +1616,7 @@ async def refresh_user_stats(db: AsyncSession, user_id: int):
     stats.total_noshows = noshow_count
     stats.trust_score_cached = trust_score
     stats.last_trip_date = last_trip_dt
+    return stats
 
 
 async def get_trip_manifest_use_case(
@@ -1467,17 +1703,30 @@ async def create_manifest_booking_use_case(
             detail="Cannot add booking to finalized trip",
         )
 
-    passenger_result = await db.execute(select(User).where(User.phone == payload.phone))
+    phone_raw = re.sub(r"\D", "", payload.phone or "")
+    if len(phone_raw) == 10 and phone_raw.startswith("0"):
+        formatted_phone = f"+38{phone_raw}"
+    elif len(phone_raw) == 12 and phone_raw.startswith("380"):
+        formatted_phone = f"+{phone_raw}"
+    else:
+        formatted_phone = payload.phone
+
+    passenger_result = await db.execute(select(User).where(User.phone.in_([formatted_phone, payload.phone])))
     passenger = passenger_result.scalars().first()
     if not passenger:
         passenger = User(
-            phone=payload.phone,
-            full_name=payload.full_name or payload.phone,
+            phone=formatted_phone,
+            full_name=payload.full_name or formatted_phone,
             role=UserRole.PASSENGER,
             is_active=True,
         )
         db.add(passenger)
         await db.flush()
+    elif not passenger.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Пасажир заблокований у системі",
+        )
     elif payload.full_name and passenger.full_name != payload.full_name:
         passenger.full_name = payload.full_name
 
@@ -1523,6 +1772,7 @@ async def create_manifest_booking_use_case(
         booking_type=payload.booking_type,
         source=payload.source,
         status=BookingStatus.RESERVED,
+        payment_method=getattr(payload, 'payment_method', PaymentMethod.CASH) or PaymentMethod.CASH,
         passengers_count=payload.seats,
         amount_paid=amount,
         comment=payload.comment,
@@ -1542,6 +1792,7 @@ async def create_manifest_booking_use_case(
         message=f"Created {payload.booking_type.value} booking via {payload.source.value} for {passenger.phone}",
     )
     await db.commit()
+    await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
     await db.refresh(booking)
     return booking_to_admin(booking, passenger)
 
@@ -1582,6 +1833,7 @@ async def update_booking_status_use_case(
         message=f"Changed booking #{booking.id} status from {old_status.value} to {new_status.value}",
     )
     await db.commit()
+    await manager.broadcast("BOOKING_MUTATED", {"trip_id": booking.trip_id})
     await db.refresh(booking)
     passenger = await db.get(User, booking.passenger_id) if booking.passenger_id else None
     return booking_to_admin(booking, passenger)

@@ -232,6 +232,7 @@ async def create_offline_booking(
         full_name=payload.full_name,
         source=payload.source,
         seats=payload.seats,
+        payment_method=payload.payment_method,
     )
 
 

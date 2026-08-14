@@ -58,5 +58,5 @@ async def update_user_profile(
             user.phone = payload.phone.strip()
 
         await session.commit()
-        await session.refresh(user)
-        return user
+        stmt_ref = select(User).where(User.id == user.id).options(selectinload(User.stats))
+        return (await session.execute(stmt_ref)).scalar_one()

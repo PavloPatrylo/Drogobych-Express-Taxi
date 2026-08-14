@@ -36,6 +36,10 @@ class BookingStatus(str, enum.Enum):
     NOSHOW = "NOSHOW"
     WAITLIST = "WAITLIST"  # <--- ДОДАНО ДЛЯ СПИСКУ ОЧІКУВАННЯ
 
+class PaymentMethod(str, enum.Enum):
+    CASH = "CASH"
+    CARD = "CARD"
+
 # Створюємо перелік (Enum) для ролей
 class UserRole(str, enum.Enum):
     PASSENGER = "passenger"
@@ -191,6 +195,7 @@ class Booking(Base):
     booking_type: Mapped[BookingType] = mapped_column(Enum(BookingType))
     source: Mapped[BookingSource] = mapped_column(Enum(BookingSource))
     status: Mapped[BookingStatus] = mapped_column(Enum(BookingStatus), default=BookingStatus.RESERVED)
+    payment_method: Mapped[PaymentMethod] = mapped_column(Enum(PaymentMethod), default=PaymentMethod.CASH, server_default="CASH")
     
     passengers_count: Mapped[int] = mapped_column(Integer, default=1)
     amount_paid: Mapped[float] = mapped_column(Numeric(10, 2))

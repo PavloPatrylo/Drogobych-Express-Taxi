@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
@@ -7,7 +8,19 @@ from sqlalchemy import select
 
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
+@pytest.mark.asyncio
 async def test_search():
+    """
+    Короткий опис: Пошук рейсів із порівнянням часових меж (Naive vs Kyiv Timezone).
+    Що перевіряє: Порівняння результатів пошуку рейсів за безчасовими межами (Naive datetime) та з урахуванням часового поясу Києва (Europe/Kyiv).
+    На вхід:
+        - travel_date: дата пошуку (2026-08-01).
+        - from_location_id = 18, to_location_id = 19.
+        - База даних з рейсами через async_session_maker.
+    Очікуваний результат на виході:
+        - Виведення кількості знайдених рейсів для Naive та Kyiv timezone запитів.
+    """
+
     travel_date = date(2026, 8, 1)
     
     # 1. Naive bounds (old backend logic)
