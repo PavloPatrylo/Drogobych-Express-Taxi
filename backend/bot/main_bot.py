@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher()
 
-# УВАГА: Заміни це посилання на своє актуальне з ngrok!
+# Посилання на Telegram MiniApp у Ngrok
 WEB_APP_URL = "https://fletcher-inordinate-leontine.ngrok-free.dev"
 
 # --- 1. Визначаємо стани (FSM) ---
@@ -41,7 +41,7 @@ def get_registration_kb():
         one_time_keyboard=True
     )
 
-def get_main_menu_kb():
+def get_main_menu_kb(telegram_id: int = None):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚕 Запустити Express Taxi", web_app=WebAppInfo(url=WEB_APP_URL))]
     ])
@@ -60,7 +60,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await state.clear()
             await message.answer(
                 f"З поверненням, {user.full_name}! 👋",
-                reply_markup=get_main_menu_kb()
+                reply_markup=get_main_menu_kb(message.from_user.id)
             )
         else:
             # Якщо новий — просимо телефон
@@ -80,39 +80,52 @@ async def process_phone(message: types.Message, state: FSMContext):
     else:
         raw_phone = message.text
 
-    # Очищаємо номер від пробілів та дужок
-    phone = re.sub(r'[^\d+]', '', raw_phone)
-    if not phone.startswith('+'):
-        phone = '+' + phone
+    # Очищаємо номер від усіх символів крім цифр
+    digits = re.sub(r'\D', '', raw_phone)
+    if not digits:
+        await message.answer("❌ Некоректний номер телефону. Спробуйте ще раз або скористайтеся кнопкою внизу.")
+        return
+
+    phone = '+' + digits
 
     async with async_session_maker() as session:
-        # Шукаємо в базі, чи є вже такий номер (може, диспетчер вже створив водія)
-        stmt = select(User).where(User.phone == phone)
+        # 1. Шукаємо користувача за telegram_id АБО за номером телефону
+        stmt = select(User).where(
+            (User.telegram_id == message.from_user.id) | (User.phone == phone)
+        )
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
         if user:
             if user.role == UserRole.DRIVER:
-                # Це ВОДІЙ! Переводимо в стан очікування пароля
-                await state.update_data(user_id=user.id)
-                await state.set_state(AuthStates.waiting_for_password)
+                # ВОДІЙ: Авторизація за номером телефону БЕЗ ПАРОЛІВ!
+                user.telegram_id = message.from_user.id
+                user.phone = phone
+                user.full_name = message.from_user.full_name or user.full_name
+                await session.commit()
+
+                await state.clear()
                 await message.answer(
-                    "🚖 Система розпізнала вас як Водія.\n"
-                    "Будь ласка, введіть ваш пароль для доступу:",
-                    reply_markup=ReplyKeyboardRemove()
+                    f"🚖 **Вітаємо, {user.full_name}!**\n"
+                    f"Авторизацію водія успішно пройдено за номером телефону!\n"
+                    f"Гарної зміни! Відкрийте робочу панель водія:",
+                    reply_markup=get_main_menu_kb(message.from_user.id)
                 )
                 return
             else:
-                # Це існуючий пасажир, оновлюємо його tg_id
+                # Пасажир: оновлюємо дані
                 user.telegram_id = message.from_user.id
-                user.full_name = message.from_user.full_name
+                user.phone = phone
+                user.full_name = message.from_user.full_name or user.full_name
+                if not user.stats:
+                    user.stats = UserStats(total_trips=0, total_noshows=0, trust_score_cached=100)
                 await session.commit()
         else:
-            # Це новий ПАСАЖИР
+            # Створюємо нового пасажира
             new_user = User(
                 telegram_id=message.from_user.id,
                 phone=phone,
-                full_name=message.from_user.full_name,
+                full_name=message.from_user.full_name or "Пасажир",
                 role=UserRole.PASSENGER,
                 stats=UserStats(total_trips=0, total_noshows=0, trust_score_cached=100)
             )
@@ -123,7 +136,7 @@ async def process_phone(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "✅ Реєстрацію успішно завершено!",
-        reply_markup=get_main_menu_kb()
+        reply_markup=get_main_menu_kb(message.from_user.id)
     )
 
 # --- 4. Обробка пароля для ВОДІЯ ---
@@ -152,6 +165,24 @@ async def process_password(message: types.Message, state: FSMContext):
             )
         else:
             await message.answer("❌ Невірний пароль. Спробуйте ще раз:")
+
+# --- 5. Захист: будь-яке інше повідомлення від незареєстрованого користувача ---
+@dp.message()
+async def unauth_message_handler(message: types.Message, state: FSMContext):
+    async with async_session_maker() as session:
+        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if user and user.phone:
+            await message.answer("Оберіть потрібну дію в меню нижче:", reply_markup=get_main_menu_kb(message.from_user.id))
+        else:
+            await state.set_state(AuthStates.waiting_for_phone)
+            await message.answer(
+                "⚠️ **Для користування сервісом Express Taxi необхідно завершити реєстрацію!**\n\n"
+                "Будь ласка, натисніть кнопку «📱 Поділитися номером» внизу або введіть ваш номер телефону:",
+                reply_markup=get_registration_kb()
+            )
 
 async def main():
     logging.info("🚀 Бот з FSM Авторизацією запущений")

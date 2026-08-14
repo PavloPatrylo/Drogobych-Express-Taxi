@@ -5,3 +5,12 @@ asyncpg
 alembic
 pydantic-settings
 aiogram
+pytest
+pytest-asyncio
+aiosqlite
+httpx
+bcrypt
+python-jose
+passlib
+python-multipart
+
