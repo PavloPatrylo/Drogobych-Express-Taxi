@@ -39,6 +39,13 @@ jobs:
       - name: Run Pytest
         env:
           TESTING: "true"
+          DB_USER: "test_user"
+          DB_PASSWORD: "test_password"
+          DB_HOST: "localhost"
+          DB_PORT: "5432"
+          DB_NAME: "test_db"
+          BOT_TOKEN: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+          SECRET_KEY: "supersecretkeyfortestingpurposesonly"
         run: |
           pytest -v
 
