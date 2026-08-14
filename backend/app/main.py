@@ -1,6 +1,6 @@
 # app/main.py
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Response
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -55,7 +55,9 @@ async def on_startup():
     asyncio.create_task(start_reminder_scheduler())
     asyncio.create_task(dp.start_polling(bot, handle_signals=False))
 
-from fastapi import FastAPI, APIRouter, Response
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    return {"status": "ok"}
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():

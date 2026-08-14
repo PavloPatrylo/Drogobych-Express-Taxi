@@ -1,0 +1,38 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+
+# Налаштування середовища (усі .env файли)
+.env*
+
+
+# Тимчасові скрипти розробки та перевірки
+check_*.py
+delete_*.py
+clear_*.py
+generate_admin_hash.py
+test_search_backend.py
+
+# Системні файли та логи
+*.log
+*.sqlite
+*.sqlite3
+*.db
+.DS_Store
+Thumbs.db
+
+# Файли IDE
+.idea/
+.vscode/
+
+# Файли конфігурації Docker (не потрібні всередині контейнера)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
