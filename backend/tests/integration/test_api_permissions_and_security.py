@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import User, UserRole, Location, Trip, TripStatus, Vehicle
+from app.db.models import User, UserRole, Location, Trip, TripStatus, Vehicle, DayType
 from app.schemas.admin import ScheduleTemplateCreate, SystemConfigUpdate
 from app.services import admin_use_cases
 
@@ -28,7 +28,7 @@ async def test_passenger_cannot_access_admin_use_cases(db_session: AsyncSession)
 
     # 1. Спроба створити шаблон
     tpl_payload = ScheduleTemplateCreate(
-        day_type="WEEKDAY",
+        day_type=DayType.WEEKDAY,
         from_location_id=1,
         to_location_id=2,
         departure_time="09:00",
