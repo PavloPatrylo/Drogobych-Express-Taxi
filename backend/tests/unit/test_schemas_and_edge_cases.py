@@ -38,12 +38,14 @@ def test_admin_trip_date_validation():
             departure_time="08:00",
         )
 
+    from datetime import date, timedelta
+    valid_date_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     with pytest.raises(ValidationError):
         AdminTripUpdate(
             driver_id=1,
             vehicle_id=1,
             route="drohobych-lviv",
-            date="2026-08-15",
+            date=valid_date_str,
             departure_time="invalid-time",
             price_seated=150.0,
             price_standing=100.0,

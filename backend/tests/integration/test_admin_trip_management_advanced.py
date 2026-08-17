@@ -34,13 +34,16 @@ async def test_create_batch_trips(db_session: AsyncSession, admin_user: User):
     db_session.add(driver)
     await db_session.commit()
 
+    from datetime import date, timedelta
+    future_date_str = (date.today() + timedelta(days=5)).strftime("%Y-%m-%d")
+
     batch_payload = AdminBatchTripCreate(
         trips=[
             AdminBatchTripItem(
                 driver_id=driver.id,
                 vehicle_id=vehicle.id,
                 route="drohobych-lviv",
-                date="2026-09-01",
+                date=future_date_str,
                 departure_time="07:00",
                 arrival_time="08:30",
             ),
@@ -48,7 +51,7 @@ async def test_create_batch_trips(db_session: AsyncSession, admin_user: User):
                 driver_id=driver.id,
                 vehicle_id=vehicle.id,
                 route="drohobych-lviv",
-                date="2026-09-01",
+                date=future_date_str,
                 departure_time="10:00",
                 arrival_time="11:30",
             ),
@@ -67,11 +70,13 @@ async def test_update_trip_and_status(db_session: AsyncSession, sample_trip: Tri
     db_session.add(driver)
     await db_session.commit()
 
+    dep_date_str = sample_trip.departure_time.strftime("%Y-%m-%d")
+
     update_payload = AdminTripUpdate(
         driver_id=driver.id,
         vehicle_id=sample_trip.vehicle_id,
         route="drohobych-lviv",
-        date="2026-08-15",
+        date=dep_date_str,
         departure_time="09:00",
         arrival_time="10:30",
         price_seated=180.0,

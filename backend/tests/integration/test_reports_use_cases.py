@@ -2,7 +2,7 @@
 Integration tests for driver and vehicle reports (driver_report_use_case, vehicle_report_use_case).
 """
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -192,25 +192,28 @@ async def test_reports_date_filtering(db_session: AsyncSession, admin_user: User
     await db_session.commit()
 
     # Рейс 1: 10 серпня
+    now_utc = datetime.now(timezone.utc)
+    t1_dt = now_utc - timedelta(days=7)
+    t2_dt = now_utc + timedelta(days=3)
+
     t1 = Trip(
         driver_id=driver.id,
         vehicle_id=vehicle.id,
         from_location_id=from_loc.id,
         to_location_id=to_loc.id,
-        departure_time=datetime(2026, 8, 10, 10, 0, tzinfo=timezone.utc),
+        departure_time=t1_dt,
         status=TripStatus.COMPLETED,
         seats_limit_snapshot=15,
         standing_limit_snapshot=0,
         price_seated=100.0,
         price_standing=0.0,
     )
-    # Рейс 2: 20 серпня
     t2 = Trip(
         driver_id=driver.id,
         vehicle_id=vehicle.id,
         from_location_id=from_loc.id,
         to_location_id=to_loc.id,
-        departure_time=datetime(2026, 8, 20, 10, 0, tzinfo=timezone.utc),
+        departure_time=t2_dt,
         status=TripStatus.COMPLETED,
         seats_limit_snapshot=15,
         standing_limit_snapshot=0,
@@ -243,9 +246,11 @@ async def test_reports_date_filtering(db_session: AsyncSession, admin_user: User
     db_session.add_all([b1, b2])
     await db_session.commit()
 
-    # Фільтруємо лише по датах 2026-08-15 .. 2026-08-25
+    # Фільтруємо лише по датах рейсу 2
+    t2_date_from = (t2_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    t2_date_to = (t2_dt + timedelta(days=1)).strftime("%Y-%m-%d")
     driver_reports = await admin_use_cases.driver_report_use_case(
-        db_session, date_from="2026-08-15", date_to="2026-08-25", driver_id=driver.id
+        db_session, date_from=t2_date_from, date_to=t2_date_to, driver_id=driver.id
     )
     assert len(driver_reports) == 1
     d_rep = driver_reports[0]
@@ -254,8 +259,10 @@ async def test_reports_date_filtering(db_session: AsyncSession, admin_user: User
     assert d_rep.card_revenue == 800.0
     assert d_rep.cash_revenue == 0.0
 
+    t1_date_from = (t1_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    t1_date_to = (t1_dt + timedelta(days=1)).strftime("%Y-%m-%d")
     vehicle_reports = await admin_use_cases.vehicle_report_use_case(
-        db_session, date_from="2026-08-01", date_to="2026-08-12", vehicle_id=vehicle.id
+        db_session, date_from=t1_date_from, date_to=t1_date_to, vehicle_id=vehicle.id
     )
     assert len(vehicle_reports) == 1
     v_rep = vehicle_reports[0]
