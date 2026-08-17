@@ -1,4 +1,5 @@
 import pytest
+# pyrefly: ignore [missing-import]
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from datetime import date
@@ -64,12 +65,13 @@ async def test_search_trips_and_detail_api(db_session: AsyncSession, sample_trip
          patch("app.services.reminders.auto_close_expired_trips", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
             # Search trips endpoint
+            travel_date_str = sample_trip.departure_time.strftime("%Y-%m-%d")
             resp_search = await client.get(
                 "/api/trips/search",
                 params={
                     "from_id": sample_trip.from_location_id,
                     "to_id": sample_trip.to_location_id,
-                    "travel_date": "2026-08-15",
+                    "travel_date": travel_date_str,
                 },
             )
             assert resp_search.status_code == 200
@@ -85,7 +87,7 @@ async def test_search_trips_and_detail_api(db_session: AsyncSession, sample_trip
             sample_trip.driver_id = driver.id
             await db_session.commit()
 
-            resp_manifest = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date=2026-08-15")
+            resp_manifest = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date={travel_date_str}")
             assert resp_manifest.status_code == 200
             manifest_data = resp_manifest.json()
             assert len(manifest_data) >= 1

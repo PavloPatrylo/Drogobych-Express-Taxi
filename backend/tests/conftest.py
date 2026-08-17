@@ -141,9 +141,14 @@ async def sample_trip(db_session: AsyncSession, admin_user: User):
     db_session.add_all([from_loc, to_loc, vehicle])
     await db_session.commit()
     
+    from datetime import timedelta
+    now_utc = datetime.now(timezone.utc)
+    departure_dt = now_utc + timedelta(days=1)
+    arrival_dt = departure_dt + timedelta(hours=1, minutes=30)
+    
     trip = Trip(
-        departure_time=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
-        arrival_time=datetime(2026, 8, 15, 9, 30, tzinfo=timezone.utc),
+        departure_time=departure_dt,
+        arrival_time=arrival_dt,
         from_location_id=from_loc.id,
         to_location_id=to_loc.id,
         vehicle_id=vehicle.id,

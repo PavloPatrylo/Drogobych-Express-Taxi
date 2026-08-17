@@ -77,7 +77,7 @@ async def test_cash_reconciliation_and_confirm_driver_cash(
     db_session.add(booking)
     await db_session.commit()
 
-    target_date = "2026-08-15"
+    target_date = trip.departure_time.strftime("%Y-%m-%d")
 
     # Reconciliation before confirm
     recon_before = await drivers_cash_reconciliation_use_case(db_session, target_date=target_date)
@@ -121,7 +121,7 @@ async def test_exports_csv_and_history(
     db_session.add(parcel_booking)
     await db_session.commit()
 
-    date_str = "2026-08-15"
+    date_str = sample_trip.departure_time.strftime("%Y-%m-%d")
 
     # Drivers cash CSV
     csv_drivers = await export_drivers_cash_csv(db_session, date_from=date_str, date_to=date_str)

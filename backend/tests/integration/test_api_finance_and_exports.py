@@ -44,7 +44,7 @@ async def test_finance_reports_and_csv_exports_api(db_session: AsyncSession, adm
             "/api/admin/finance/confirm-driver-cash",
             json={
                 "driver_id": driver.id,
-                "target_date": "2026-08-15",
+                "target_date": sample_trip.departure_time.strftime("%Y-%m-%d"),
                 "received_cash": 150.0,
                 "received_card": 50.0,
                 "comment": "Confirmed by dispatcher",
