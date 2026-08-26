@@ -153,7 +153,8 @@ async def test_admin_auth_full_routes(db_session: AsyncSession, admin_user: User
         await db_session.commit()
 
         resp_del_conflict = await client.delete(f"/api/admin/auth/staff/{driver_with_trip.id}", headers=headers)
-        assert resp_del_conflict.status_code == 400
+        assert resp_del_conflict.status_code == 200
+        assert resp_del_conflict.json()["is_active"] is False
 
         # 9. DELETE /api/admin/auth/staff/{id}
         resp_del = await client.delete(f"/api/admin/auth/staff/{staff_id}", headers=headers)

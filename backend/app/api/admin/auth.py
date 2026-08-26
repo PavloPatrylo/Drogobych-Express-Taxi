@@ -6,12 +6,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.db.models import User, UserRole
-from app.schemas.admin import UserResponse, StaffCreate, StaffUpdate
-from app.api.deps import get_current_user, check_owner_access
+from app.schemas.admin import UserResponse, StaffCreate, StaffUpdate, PasswordResetPayload
+from app.api.deps import get_current_user, check_admin_access, check_owner_access
 from app.core.security import hash_password
 from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Admin Auth"])
+
+
+def ensure_staff_management_permission(current_user: User, target_role: UserRole) -> None:
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can manage staff accounts",
+        )
 
 @router.post("/login")
 async def login(
@@ -42,10 +50,43 @@ async def get_me(
     """
     return current_user
 
-@router.get("/staff", response_model=list[UserResponse])
+@router.post("/login")
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(), 
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Вхід в систему. 
+    form_data.username - це номер телефону.
+    """
+    # 1. Автентифікація через сервіс
+    user = await auth_service.authenticate_user(db, form_data.username, form_data.password)
+    
+    # 2. Генерація токена через сервіс
+    token = auth_service.create_access_token(user.id, user.role)
+    
+    return {
+        "access_token": token, 
+        "token_type": "bearer"
+    }
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Повертає профіль поточного адміністратора/диспетчера.
+    """
+    return current_user
+
+@router.get(
+    "/staff",
+    response_model=list[UserResponse],
+    dependencies=[Depends(check_admin_access)],
+)
 async def get_staff(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user) # Тільки авторизовані можуть бачити персонал
+    current_user: User = Depends(get_current_user)
 ):
     """
     Повертає список водіїв та диспетчерів.
@@ -61,12 +102,20 @@ async def create_staff_member(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(check_admin_access),
 ):
+    ensure_staff_management_permission(current_user, payload.role)
+
+    if payload.role == UserRole.DRIVER and (not payload.password or not payload.password.strip()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Для облікового запису водія необхідно обов'язково вказати пароль"
+        )
+
     # Check if user already exists by phone
     dup = await db.execute(select(User).where(User.phone == payload.phone))
     if dup.scalars().first():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Користувач з таким номером телефону вже існує")
 
-    hashed = hash_password(payload.password) if payload.password else None
+    hashed = hash_password(payload.password.strip()) if payload.password and payload.password.strip() else None
     new_user = User(
         full_name=payload.full_name,
         phone=payload.phone,
@@ -91,6 +140,9 @@ async def update_staff_member(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
 
+    ensure_staff_management_permission(current_user, existing.role)
+    ensure_staff_management_permission(current_user, payload.role)
+
     if existing.phone != payload.phone:
         dup = await db.execute(select(User).where(User.phone == payload.phone))
         if dup.scalars().first():
@@ -99,12 +151,33 @@ async def update_staff_member(
     existing.full_name = payload.full_name
     existing.phone = payload.phone
     existing.role = payload.role
-    if payload.password:
-        existing.password = hash_password(payload.password)
+    if payload.password and payload.password.strip():
+        existing.password = hash_password(payload.password.strip())
 
     await db.commit()
     await db.refresh(existing)
     return existing
+
+
+@router.post("/staff/{user_id}/password")
+async def reset_staff_password(
+    user_id: int,
+    payload: PasswordResetPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    existing = await db.get(User, user_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
+
+    ensure_staff_management_permission(current_user, existing.role)
+
+    if not payload.password or not payload.password.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Пароль не може бути порожнім")
+
+    existing.password = hash_password(payload.password.strip())
+    await db.commit()
+    return {"message": "Пароль співробітника успішно оновлено", "user_id": user_id}
 
 
 @router.post("/staff/{user_id}/block")
@@ -116,6 +189,7 @@ async def block_staff_member(
     existing = await db.get(User, user_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
+    ensure_staff_management_permission(current_user, existing.role)
     existing.is_active = False
     await db.commit()
     return {"message": "Співробітника заблоковано", "is_active": False}
@@ -130,6 +204,7 @@ async def unblock_staff_member(
     existing = await db.get(User, user_id)
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
+    ensure_staff_management_permission(current_user, existing.role)
     existing.is_active = True
     await db.commit()
     return {"message": "Співробітника розблоковано", "is_active": True}
@@ -145,23 +220,31 @@ async def delete_staff_member(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
 
+    ensure_staff_management_permission(current_user, existing.role)
+
     from app.db.models import Trip
     trip_stmt = select(Trip).where(Trip.driver_id == user_id)
     trip_res = await db.execute(trip_stmt)
-    if trip_res.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неможливо видалити водія, оскільки він має пов'язані рейси. Спочатку змініть водія у рейсах або деактивуйте його доступ."
-        )
+    has_trips = bool(trip_res.scalars().first())
+
+    if has_trips:
+        existing.is_active = False
+        await db.commit()
+        return {
+            "message": "Водія деактивовано, а його рейси приховано від пасажирів",
+            "is_active": False,
+        }
 
     try:
         await db.delete(existing)
         await db.commit()
     except Exception:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неможливо видалити користувача через наявність зв'язаних записів. Рекомендуємо деактивувати його доступ."
-        )
+        existing.is_active = False
+        await db.commit()
+        return {
+            "message": "Водія деактивовано, а його рейси приховано від пасажирів",
+            "is_active": False,
+        }
 
     return {"message": "Користувача успішно видалено"}

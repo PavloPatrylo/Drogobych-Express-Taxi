@@ -1,4 +1,4 @@
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const tg = window.Telegram.WebApp;
     if (tg.ready) tg.ready();
     tg.expand();
@@ -26,6 +26,45 @@ document.addEventListener('DOMContentLoaded', () => {
     let fallbackName = tg.initDataUnsafe?.user?.first_name || "Користувач";
 
     const API_URL = window.location.origin + '/api';
+
+    let authToken = sessionStorage.getItem('express_taxi_token') || null;
+
+    async function authFetch(url, options = {}) {
+        options.headers = options.headers || {};
+        if (authToken) {
+            options.headers['Authorization'] = `Bearer ${authToken}`;
+        }
+        options.headers['ngrok-skip-browser-warning'] = 'true';
+        return fetch(url, options);
+    }
+
+    async function initAuth() {
+        if (tg && tg.initData) {
+            try {
+                const res = await fetch(`${API_URL}/auth/telegram-webapp`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'ngrok-skip-browser-warning': 'true'
+                    },
+                    body: JSON.stringify({ init_data: tg.initData })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    authToken = data.access_token;
+                    sessionStorage.setItem('express_taxi_token', authToken);
+                    if (data.user && data.user.telegram_id) {
+                        telegramId = data.user.telegram_id;
+                    }
+                    initWebSocket();
+                }
+            } catch (e) {
+                console.error("Telegram WebApp auth error:", e);
+            }
+        }
+    }
+
+    await initAuth();
 
     const expandedTrips = new Set();
 
@@ -131,6 +170,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     
+    function showLockScreen(title, desc, helperHtml) {
+        const lockScreen = document.getElementById('unregistered-lock-screen');
+        if (!lockScreen) return;
+
+        const titleEl = document.getElementById('lock-screen-title');
+        const descEl = document.getElementById('lock-screen-desc');
+        const boxEl = document.getElementById('lock-screen-box');
+
+        if (titleEl) titleEl.textContent = title;
+        if (descEl) descEl.textContent = desc;
+        if (boxEl) boxEl.innerHTML = helperHtml;
+
+        lockScreen.classList.remove('hidden');
+    }
+
     // 1. Профіль + маршрутизація за роллю
     async function fetchUserData() {
         nameEl.textContent = fallbackName;
@@ -140,10 +194,27 @@ document.addEventListener('DOMContentLoaded', () => {
         avatarEl.textContent = initialParts.map(p => p[0]).join('').substring(0, 2).toUpperCase() || '🚕';
 
         try {
-            const response = await fetch(`${API_URL}/users/${telegramId}`, { headers: { 'ngrok-skip-browser-warning': 'true' }});
-            if (!response.ok) throw new Error('Користувача не знайдено');
+            const response = await authFetch(`${API_URL}/users/me`);
+            if (response.status === 403) {
+                showLockScreen(
+                    "Обліковий запис заблоковано",
+                    "Ваш доступ до сервісу Express Taxi призупинено адміністратором.",
+                    "👋 Зверніться до підтримки або адміністратора для розблокування."
+                );
+                return;
+            }
             const userData = await response.json();
             
+            if (!userData.phone || !userData.phone.trim()) {
+                console.warn("⚠️ Телефон не підтверджено у чаті бота.");
+                showLockScreen(
+                    "Реєстрацію не завершено",
+                    "Для користування Express Taxi поділіться номером телефону у чаті Telegram-бота.",
+                    "👉 Закрийте MiniApp, натисніть <b>«📱 Поділитися номером»</b> у чаті бота та спробуйте зайти знову!"
+                );
+                return;
+            }
+
             nameEl.textContent = userData.full_name || fallbackName;
             const nameParts = (userData.full_name || fallbackName).split(' ');
             avatarEl.textContent = nameParts.map(p => p[0]).join('').substring(0, 2).toUpperCase();
@@ -160,11 +231,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     );
                     if (newName && newName.trim() && newName.trim() !== currentName) {
                         try {
-                            const res = await fetch(`${API_URL}/users/${telegramId}`, {
+                            const res = await authFetch(`${API_URL}/users/me`, {
                                 method: 'PUT',
                                 headers: {
-                                    'Content-Type': 'application/json',
-                                    'ngrok-skip-browser-warning': 'true'
+                                    'Content-Type': 'application/json'
                                 },
                                 body: JSON.stringify({ full_name: newName.trim() })
                             });
@@ -498,7 +568,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const url = `${API_URL}/trips/driver/${telegramId}/manifest?target_date=${currentDriverDate}`;
-            const response = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' }});
+            const response = await authFetch(url);
             if (!response.ok) throw new Error('Помилка маніфесту');
             const manifests = await response.json();
 
@@ -702,13 +772,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // === ПІДТВЕРДЖЕННЯ ПОСАДКИ (UC-D5) ===
-// === ПІДТВЕРДЖЕННЯ ПОСАДКИ (UC-D5) ===
     window.confirmBoarding = async function(bookingId) {
-        // ❌ Рядок із confirm видалено
         try {
-            const response = await fetch(`${API_URL}/bookings/${bookingId}/status`, {
+            const response = await authFetch(`${API_URL}/bookings/${bookingId}/status`, {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'BOARDED' })
             });
             if (response.ok) fetchDriverManifest();
@@ -720,7 +788,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 // === ЗМІНА СТАТУСУ РЕЙСУ (UC-D2) ===
     window.changeTripStatus = async function(tripId, newStatus) {
-        // Формуємо зрозумілий текст для підтвердження
         let actionText = '';
         if (newStatus === 'BOARDING') actionText = 'розпочати посадку пасажирів';
         else if (newStatus === 'ACTIVE') actionText = 'вирушити в дорогу (всіх відсутніх буде відмічено як "Неявка")';
@@ -729,21 +796,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!confirm(`Ви дійсно хочете ${actionText}?`)) return;
 
         try {
-            // Відправляємо PATCH запит на наш новий ендпоінт
-            const response = await fetch(`${API_URL}/trips/${tripId}/status?telegram_id=${telegramId}`, {
+            const response = await authFetch(`${API_URL}/trips/${tripId}/status?telegram_id=${telegramId}`, {
                 method: 'PATCH',
                 headers: { 
-                    'Content-Type': 'application/json',
-                    'ngrok-skip-browser-warning': 'true' 
+                    'Content-Type': 'application/json' 
                 },
                 body: JSON.stringify({ status: newStatus })
             });
 
             if (response.ok) {
-                // Основний сценарій: Оновлюємо маніфест, щоб побачити новий статус
                 fetchDriverManifest();
             } else {
-                // Альтернативний сценарій A2.2: Виводимо помилку (напр. "Ця дія недоступна")
                 const errorData = await response.json();
                 alert(`❌ ${errorData.detail}`);
             }
@@ -755,22 +818,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // === ДОДАВАННЯ СТОЯЧОГО ПАСАЖИРА (UC-D3) ===
     window.addStandingPassenger = async function(tripId) {
-        // Згідно з SRS (NFR-06) - працює в 1 клік, без підтверджень
         try {
-            const response = await fetch(`${API_URL}/bookings/standing`, {
+            const response = await authFetch(`${API_URL}/bookings/standing`, {
                 method: 'POST',
                 headers: { 
-                    'Content-Type': 'application/json',
-                    'ngrok-skip-browser-warning': 'true' 
+                    'Content-Type': 'application/json' 
                 },
                 body: JSON.stringify({ trip_id: tripId, telegram_id: telegramId })
             });
 
             if (response.ok) {
-                // Миттєво оновлюємо маніфест
                 fetchDriverManifest();
             } else {
-                // Виводимо помилку, наприклад "Ліміт стоячих вичерпано"
                 const errorData = await response.json();
                 alert(`❌ ${errorData.detail}`);
             }
@@ -782,23 +841,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // === ДОДАВАННЯ ПОСИЛКИ ===
     window.addParcel = async function(tripId) {
-        // Запитуємо у водія короткі дані
         let desc = prompt("Введіть опис посилки (або телефон отримувача):", "Коробка");
-        if (desc === null) return; // Якщо водій натиснув "Скасувати"
+        if (desc === null) return;
 
         let priceStr = prompt("Введіть вартість доставки (грн):", "50");
         if (priceStr === null) return;
 
-        // Перетворюємо введену ціну на число, якщо ввели текст - ставимо 0
         let price = parseFloat(priceStr);
         if (isNaN(price)) price = 0;
 
         try {
-            const response = await fetch(`${API_URL}/bookings/parcel`, {
+            const response = await authFetch(`${API_URL}/bookings/parcel`, {
                 method: 'POST',
                 headers: { 
-                    'Content-Type': 'application/json',
-                    'ngrok-skip-browser-warning': 'true' 
+                    'Content-Type': 'application/json' 
                 },
                 body: JSON.stringify({ 
                     trip_id: tripId, 
@@ -809,7 +865,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (response.ok) {
-                // Безшовне оновлення екрану
                 fetchDriverManifest(); 
             } else {
                 const errorData = await response.json();
@@ -820,8 +875,7 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('❌ Помилка з\'єднання з сервером');
         }
     };
-    // === ЗГОРТАННЯ/РОЗГОРТАННЯ СПИСКУ ПАСАЖИРІВ ===
-// === ЗГОРТАННЯ/РОЗГОРТАННЯ СПИСКУ ПАСАЖИРІВ ===
+
     window.togglePassengers = function(tripId) {
         const listContainer = document.getElementById(`passengers-list-${tripId}`);
         const icon = document.getElementById(`toggle-icon-${tripId}`);
@@ -829,18 +883,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (listContainer.classList.contains('hidden')) {
             listContainer.classList.remove('hidden');
             icon.textContent = '▲'; 
-            expandedTrips.add(tripId); // ✅ Запам'ятовуємо, що цей рейс відкрито
+            expandedTrips.add(tripId);
         } else {
             listContainer.classList.add('hidden');
             icon.textContent = '▼'; 
-            expandedTrips.delete(tripId); // ✅ Видаляємо з пам'яті, бо рейс закрито
+            expandedTrips.delete(tripId);
         }
     };
+
     window.cancelQuickSale = async function(bookingId) {
         if (!confirm('Видалити цей запис?')) return;
         try {
-            const response = await fetch(`${API_URL}/bookings/${bookingId}/quick-sale?telegram_id=${telegramId}`, {
-                method: 'DELETE', headers: { 'ngrok-skip-browser-warning': 'true' }
+            const response = await authFetch(`${API_URL}/bookings/${bookingId}/quick-sale?telegram_id=${telegramId}`, {
+                method: 'DELETE'
             });
             if (response.ok) fetchDriverManifest();
             else alert("❌ Помилка при видаленні");
@@ -860,7 +915,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             // 👇 ДОДАЛИ dateQuery В КІНЕЦЬ URL 👇
-            const response = await fetch(`${API_URL}/trips/driver/${telegramId}/summary${dateQuery}`, { headers: { 'ngrok-skip-browser-warning': 'true' }});
+            const response = await authFetch(`${API_URL}/trips/driver/${telegramId}/summary${dateQuery}`);
             
             if (!response.ok) throw new Error();
             const data = await response.json();
@@ -929,9 +984,7 @@ document.addEventListener('DOMContentLoaded', () => {
             dateToObj.setDate(dateToObj.getDate() + 6);
             const dateToStr = dateToObj.toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
 
-            const response = await fetch(`${API_URL}/trips/driver/${telegramId}/published-schedule?date_from=${todayStr}&date_to=${dateToStr}`, {
-                headers: { 'ngrok-skip-browser-warning': 'true' }
-            });
+            const response = await authFetch(`${API_URL}/trips/driver/${telegramId}/published-schedule?date_from=${todayStr}&date_to=${dateToStr}`);
 
             if (!response.ok) throw new Error();
             const data = await response.json();
@@ -1170,11 +1223,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let socketReconnectTimer = null;
 
     function initWebSocket() {
+        if (!authToken) {
+            console.warn("⚠️ WebSocket: відсутній токен авторизації. Підключення скасовано.");
+            return;
+        }
         if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
             return;
         }
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws?telegram_id=${telegramId}`;
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws?token=${encodeURIComponent(authToken)}`;
 
         try {
             socket = new WebSocket(wsUrl);
@@ -1185,7 +1242,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         socket.onopen = () => {
-            console.log("🟢 WebSocket z'ednannya vstanovleno (tg_id=" + telegramId + ")");
+            console.log("🟢 WebSocket з'єднання встановлено");
             if (socketReconnectTimer) {
                 clearTimeout(socketReconnectTimer);
                 socketReconnectTimer = null;
@@ -1201,8 +1258,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        socket.onclose = () => {
-            console.warn("🔴 WebSocket z'ednannya rozirvano. Reconnecting in 4s...");
+        socket.onclose = (event) => {
+            if (event && event.code === 1008) {
+                console.warn("🔴 WebSocket: токен авторизації недійсний (код 1008). Зупинено перепідключення.");
+                return;
+            }
+            console.warn("🔴 WebSocket з'єднання розірвано. Reconnecting in 4s...");
             scheduleReconnect();
         };
 

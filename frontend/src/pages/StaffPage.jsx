@@ -501,7 +501,7 @@ export default function StaffPage() {
               <div>
                 <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
                   {formData.role === 'driver'
-                    ? "Пароль (не потрібен для водія у Telegram-боті)"
+                    ? (editingMember ? "Пароль водія (залиште порожнім, щоб не змінювати)" : "Пароль водія (для входу у Telegram-боті) *")
                     : editingMember
                     ? "Пароль (залиште порожнім, щоб не змінювати)"
                     : "Пароль для входу у веб-панель *"}
@@ -510,14 +510,13 @@ export default function StaffPage() {
                   type="password"
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  placeholder={formData.role === 'driver' ? "Водій входить через Telegram без паролю" : "••••••••"}
-                  disabled={formData.role === 'driver'}
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-3 text-xs text-slate-100 outline-none font-mono disabled:opacity-40 disabled:cursor-not-allowed"
-                  required={!editingMember && formData.role !== 'driver'}
+                  placeholder={formData.role === 'driver' ? (editingMember ? "••••••••" : "Введіть пароль для водія") : "••••••••"}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-3 text-xs text-slate-100 outline-none font-mono"
+                  required={!editingMember}
                 />
                 {formData.role === 'driver' && (
-                  <p className="text-[11px] text-sky-400 font-medium mt-1">
-                    💡 Водій ідентифікується в Telegram-боті за вказаним номером телефону.
+                  <p className="text-[11px] text-amber-400 font-medium mt-1">
+                    💡 Водій вводитиме цей пароль для підтвердження авторизації в Telegram-боті.
                   </p>
                 )}
               </div>

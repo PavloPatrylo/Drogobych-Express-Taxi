@@ -40,18 +40,20 @@ async def test_quick_sale_cancellation_api(db_session: AsyncSession, sample_trip
             pass
 
     with patch("app.api.bookings.async_session_maker", return_value=SessionContext()):
-        with patch("app.api.bookings.manager.broadcast", new_callable=AsyncMock):
+        with patch("app.api.bookings.manager.broadcast", new_callable=AsyncMock), \
+             patch("app.api.deps.async_session_maker", return_value=SessionContext()):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+                headers = {"Authorization": f"Bearer {create_access_token(driver.id, driver.role)}"}
                 # Cancel quick sale
                 resp_del = await client.delete(
                     f"/api/bookings/{booking.id}/quick-sale",
-                    params={"telegram_id": driver.telegram_id},
+                    headers=headers,
                 )
                 assert resp_del.status_code == 200
 
                 # 404 for deleted booking
                 resp_404 = await client.delete(
                     f"/api/bookings/{booking.id}/quick-sale",
-                    params={"telegram_id": driver.telegram_id},
+                    headers=headers,
                 )
                 assert resp_404.status_code == 404

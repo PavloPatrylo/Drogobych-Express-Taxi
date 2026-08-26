@@ -13,12 +13,13 @@ from aiogram.types import (
     InlineKeyboardButton, 
     WebAppInfo
 )
-from sqlalchemy import select
+from sqlalchemy import select, delete
+from sqlalchemy.orm import selectinload
 
 # Імпортуємо налаштування та моделі
 from app.core.config import settings
 from app.db.database import async_session_maker
-from app.db.models import User, UserStats, UserRole
+from app.db.models import User, UserStats, UserRole, Booking, AuditLog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -51,11 +52,15 @@ def get_main_menu_kb(telegram_id: int = None):
 async def cmd_start(message: types.Message, state: FSMContext):
     async with async_session_maker() as session:
         # Шукаємо юзера за його telegram_id
-        stmt = select(User).where(User.telegram_id == message.from_user.id)
+        stmt = select(User).options(selectinload(User.stats)).where(User.telegram_id == message.from_user.id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
         if user and user.phone:
+            if not user.is_active:
+                await state.clear()
+                await message.answer("❌ Ваш обліковий запис заблоковано адміністратором.")
+                return
             # Якщо юзер вже є і має телефон — пускаємо в застосунок
             await state.clear()
             await message.answer(
@@ -71,8 +76,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 reply_markup=get_registration_kb()
             )
 
+from app.core.security import verify_password
+
 # --- 3. Обробка номеру телефону (Контакт АБО Текст) ---
-@dp.message(AuthStates.waiting_for_phone, F.contact | F.text)
+@dp.message(F.contact)
+@dp.message(AuthStates.waiting_for_phone, F.text)
 async def process_phone(message: types.Message, state: FSMContext):
     # Отримуємо номер з контакту або з тексту
     if message.contact:
@@ -89,27 +97,37 @@ async def process_phone(message: types.Message, state: FSMContext):
     phone = '+' + digits
 
     async with async_session_maker() as session:
-        # 1. Шукаємо користувача за telegram_id АБО за номером телефону
-        stmt = select(User).where(
-            (User.telegram_id == message.from_user.id) | (User.phone == phone)
-        )
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
+        # 1. Спершу шукаємо користувача за номером телефону (наприклад, ВОДІЯ, створеного Адміном)
+        stmt_phone = select(User).options(selectinload(User.stats)).where(User.phone == phone)
+        user_by_phone = (await session.execute(stmt_phone)).scalar_one_or_none()
+
+        # 2. Шукаємо користувача за telegram_id (який міг створитися тимчасово в WebApp)
+        stmt_tg = select(User).options(selectinload(User.stats)).where(User.telegram_id == message.from_user.id)
+        user_by_tg = (await session.execute(stmt_tg)).scalar_one_or_none()
+
+        user = None
+        if user_by_phone:
+            user = user_by_phone
+            # Якщо існує дублікат без телефону з таким ж telegram_id - видаляємо його
+            if user_by_tg and user_by_tg.id != user_by_phone.id and not user_by_tg.phone:
+                await session.delete(user_by_tg)
+                await session.flush()
+        else:
+            user = user_by_tg
 
         if user:
-            if user.role == UserRole.DRIVER:
-                # ВОДІЙ: Авторизація за номером телефону БЕЗ ПАРОЛІВ!
-                user.telegram_id = message.from_user.id
-                user.phone = phone
-                user.full_name = message.from_user.full_name or user.full_name
-                await session.commit()
-
+            if not user.is_active:
                 await state.clear()
+                await message.answer("❌ Ваш обліковий запис заблоковано адміністратором.")
+                return
+
+            if user.role == UserRole.DRIVER:
+                # ВОДІЙ: Вимагаємо пароль
+                await state.set_state(AuthStates.waiting_for_password)
+                await state.update_data(user_id=user.id)
                 await message.answer(
                     f"🚖 **Вітаємо, {user.full_name}!**\n"
-                    f"Авторизацію водія успішно пройдено за номером телефону!\n"
-                    f"Гарної зміни! Відкрийте робочу панель водія:",
-                    reply_markup=get_main_menu_kb(message.from_user.id)
+                    f"Знайдено обліковий запис водія. Введіть ваш пароль для входу:"
                 )
                 return
             else:
@@ -145,23 +163,45 @@ async def process_password(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = data.get("user_id")
 
+    if not user_id:
+        await state.clear()
+        await message.answer("❌ Сесія авторизації застаріла. Спробуйте ввести номер телефону знову за допомогою /start.")
+        return
+
     async with async_session_maker() as session:
         stmt = select(User).where(User.id == user_id)
         result = await session.execute(stmt)
-        user = result.scalar_one()
+        user = result.scalar_one_or_none()
 
-        # Перевіряємо пароль
-        if message.text == user.password:
-            # Успіх! Прив'язуємо tg_id
+        if not user:
+            await state.clear()
+            await message.answer("❌ Користувача не знайдено.")
+            return
+
+        # Перевіряємо пароль через bcrypt
+        if user.password and verify_password(message.text.strip(), user.password):
+            # Перевіряємо, чи є в базі дублікат акаунта без телефону з таким tg_id (напр. створений при відкритті WebApp)
+            existing_tg_user = (await session.execute(
+                select(User).where(User.telegram_id == message.from_user.id, User.id != user.id)
+            )).scalar_one_or_none()
+
+            if existing_tg_user:
+                await session.execute(delete(Booking).where(Booking.passenger_id == existing_tg_user.id))
+                await session.execute(delete(UserStats).where(UserStats.user_id == existing_tg_user.id))
+                await session.execute(delete(AuditLog).where(AuditLog.actor_id == existing_tg_user.id))
+                await session.delete(existing_tg_user)
+                await session.flush()
+
+            # Успіх! Прив'язуємо tg_id до акаунта водія
             user.telegram_id = message.from_user.id
-            user.full_name = message.from_user.full_name
+            user.full_name = message.from_user.full_name or user.full_name
             await session.commit()
             
             await state.clear()
             await message.answer(
                 "✅ Пароль прийнято! Авторизація водія успішна.\n"
                 "Гарної зміни! Відкрийте панель керування:",
-                reply_markup=get_main_menu_kb()
+                reply_markup=get_main_menu_kb(message.from_user.id)
             )
         else:
             await message.answer("❌ Невірний пароль. Спробуйте ще раз:")
@@ -177,6 +217,10 @@ async def unauth_message_handler(message: types.Message, state: FSMContext):
         if user and user.phone:
             await message.answer("Оберіть потрібну дію в меню нижче:", reply_markup=get_main_menu_kb(message.from_user.id))
         else:
+            if message.contact or (message.text and re.search(r'\d{7,}', message.text)):
+                await process_phone(message, state)
+                return
+
             await state.set_state(AuthStates.waiting_for_phone)
             await message.answer(
                 "⚠️ **Для користування сервісом Express Taxi необхідно завершити реєстрацію!**\n\n"

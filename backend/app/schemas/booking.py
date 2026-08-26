@@ -4,9 +4,9 @@ from typing import Optional
 
 class BookingCreate(BaseModel):
     trip_id: int
-    telegram_id: int
     requested_seats: int = 1
     payment_method: Optional[str] = "CASH"
+    preferred_type: Optional[str] = "SEATED"
 
 # === НОВА СХЕМА ДЛЯ ПЕРЕГЛЯДУ КВИТКІВ (UC-P4) ===
 class BookingRead(BaseModel):
@@ -18,6 +18,7 @@ class BookingRead(BaseModel):
     trip_departure_time: datetime
     from_location: str
     to_location: str
+    waitlist_position: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -53,11 +54,9 @@ class BookingStatusUpdate(BaseModel):
 
 class StandingBookingCreate(BaseModel):
     trip_id: int
-    telegram_id: int
 
 
 class ParcelBookingCreate(BaseModel):
     trip_id: int
-    telegram_id: int
     description: str = "Посилка"
     price: float = 0.0

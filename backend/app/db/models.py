@@ -106,9 +106,9 @@ class SystemConfig(Base):
     __tablename__ = "system_config"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    price_seated: Mapped[float] = mapped_column(Numeric(10, 2), default=120.00)
-    price_standing: Mapped[float] = mapped_column(Numeric(10, 2), default=80.00)
-    price_parcel: Mapped[float] = mapped_column(Numeric(10, 2), default=50.00)
+    price_seated: Mapped[float] = mapped_column(Numeric(10, 2), default=200.00)
+    price_standing: Mapped[float] = mapped_column(Numeric(10, 2), default=150.00)
+    price_parcel: Mapped[float] = mapped_column(Numeric(10, 2), default=100.00)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     updated_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
 
@@ -146,7 +146,7 @@ class Trip(Base):
     
     price_seated: Mapped[float] = mapped_column(Numeric(10, 2))
     price_standing: Mapped[float] = mapped_column(Numeric(10, 2))
-    price_parcel: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True, default=100.0)
+    price_parcel: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
     
     # <--- ДОДАНО ДЛЯ ФІНАНСОВОГО ЗАКРИТТЯ РЕЙСУ
     submitted_amount: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)

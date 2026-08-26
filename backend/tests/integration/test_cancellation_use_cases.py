@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     Trip, TripStatus, Booking, BookingType, BookingSource, 
-    BookingStatus, PaymentMethod, User, AuditLog
+    BookingStatus, PaymentMethod, User, UserRole, AuditLog
 )
 from app.services import admin_use_cases
 
@@ -152,4 +152,61 @@ async def test_cancel_booking_permission_denied_for_passenger(
         )
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_waitlist_auto_promotion_on_cancellation(
+    db_session: AsyncSession, sample_trip: Trip, admin_user: User, passenger_user: User
+):
+    """
+    Перевіряє роботу автоматичного просування зі списку очікування (Waitlist -> RESERVED)
+    при скасуванні квитка іншого пасажира.
+    """
+    sample_trip.seats_limit_snapshot = 1
+    sample_trip.standing_limit_snapshot = 0
+    await db_session.commit()
+
+    # 1. Забронювати єдине крісло для passenger_user
+    b1 = Booking(
+        trip_id=sample_trip.id,
+        passenger_id=passenger_user.id,
+        created_by_id=passenger_user.id,
+        booking_type=BookingType.SEATED,
+        source=BookingSource.BOT,
+        status=BookingStatus.RESERVED,
+        payment_method=PaymentMethod.CASH,
+        passengers_count=1,
+        amount_paid=150.0,
+    )
+    db_session.add(b1)
+    await db_session.commit()
+
+    # 2. Другий пасажир стає у WAITLIST
+    p2 = User(phone="+380971119900", full_name="Waitlist Pax", role=UserRole.PASSENGER, is_active=True)
+    db_session.add(p2)
+    await db_session.commit()
+
+    b2 = Booking(
+        trip_id=sample_trip.id,
+        passenger_id=p2.id,
+        created_by_id=p2.id,
+        booking_type=BookingType.SEATED,
+        source=BookingSource.BOT,
+        status=BookingStatus.WAITLIST,
+        payment_method=PaymentMethod.CASH,
+        passengers_count=1,
+        amount_paid=0.0,
+    )
+    db_session.add(b2)
+    await db_session.commit()
+
+    assert b2.status == BookingStatus.WAITLIST
+
+    # 3. Адмін скасовує бронювання b1
+    await admin_use_cases.cancel_booking(db=db_session, booking_id=b1.id, actor=admin_user)
+
+    # 4. Перевіряємо, що b2 був автоматично промований до RESERVED з ціною 150.0
+    await db_session.refresh(b2)
+    assert b2.status == BookingStatus.RESERVED
+    assert b2.amount_paid == 150.0
 

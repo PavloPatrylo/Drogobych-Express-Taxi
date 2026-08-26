@@ -81,6 +81,8 @@ async def test_api_trips_search_and_locations(db_session: AsyncSession, mock_ses
             assert len(data) >= 1
 
 
+from app.services.auth_service import create_access_token
+
 @pytest.mark.asyncio
 async def test_api_trips_driver_manifest_and_status_update(db_session: AsyncSession, mock_session_cm):
     loc_from = Location(name="Drohobych M")
@@ -89,6 +91,8 @@ async def test_api_trips_driver_manifest_and_status_update(db_session: AsyncSess
     vehicle = Vehicle(model="Sprinter M", plate_number="BC8888M", total_seats=18, total_standing=4, is_active=True)
     db_session.add_all([loc_from, loc_to, driver, vehicle])
     await db_session.commit()
+    token = create_access_token(driver.id, driver.role)
+    headers = {"Authorization": f"Bearer {token}"}
 
     dep = datetime.now(timezone.utc) + timedelta(hours=3)
     arr = dep + timedelta(hours=2)
@@ -110,6 +114,7 @@ async def test_api_trips_driver_manifest_and_status_update(db_session: AsyncSess
     await db_session.commit()
 
     with (
+        patch("app.api.deps.async_session_maker", return_value=mock_session_cm),
         patch("app.api.trips.async_session_maker", return_value=mock_session_cm),
         patch("app.services.reminders.async_session_maker", return_value=mock_session_cm),
         patch("app.websocket_manager.manager.broadcast", AsyncMock()),
@@ -117,17 +122,17 @@ async def test_api_trips_driver_manifest_and_status_update(db_session: AsyncSess
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             target_date_str = dep.strftime("%Y-%m-%d")
             # Get driver manifest
-            resp_m = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date={target_date_str}")
+            resp_m = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date={target_date_str}", headers=headers)
             assert resp_m.status_code == 200
 
             # Update status to ACTIVE via PATCH /api/trips/{trip_id}/status
             resp_st1 = await client.patch(f"/api/trips/{trip.id}/status?telegram_id={driver.telegram_id}", json={
                 "status": "ACTIVE"
-            })
+            }, headers=headers)
             assert resp_st1.status_code == 200
 
             # Get driver summary
-            resp_sum = await client.get(f"/api/trips/driver/{driver.telegram_id}/summary")
+            resp_sum = await client.get(f"/api/trips/driver/{driver.telegram_id}/summary", headers=headers)
             assert resp_sum.status_code == 200
 
 
@@ -140,6 +145,11 @@ async def test_api_bookings_full_lifecycle(db_session: AsyncSession, mock_sessio
     vehicle = Vehicle(model="Sprinter B", plate_number="BC7777B", total_seats=18, total_standing=4, is_active=True)
     db_session.add_all([loc_from, loc_to, pax, driver, vehicle])
     await db_session.commit()
+
+    pax_token = create_access_token(pax.id, pax.role)
+    pax_headers = {"Authorization": f"Bearer {pax_token}"}
+    driver_token = create_access_token(driver.id, driver.role)
+    driver_headers = {"Authorization": f"Bearer {driver_token}"}
 
     dep = datetime.now(timezone.utc) + timedelta(days=1)
     arr = dep + timedelta(hours=2)
@@ -160,7 +170,8 @@ async def test_api_bookings_full_lifecycle(db_session: AsyncSession, mock_sessio
     db_session.add(trip)
     await db_session.commit()
 
-    with patch("app.api.bookings.async_session_maker", return_value=mock_session_cm):
+    with patch("app.api.deps.async_session_maker", return_value=mock_session_cm), \
+         patch("app.api.bookings.async_session_maker", return_value=mock_session_cm):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             # Create passenger booking
             payload = {
@@ -169,11 +180,11 @@ async def test_api_bookings_full_lifecycle(db_session: AsyncSession, mock_sessio
                 "requested_seats": 2,
                 "payment_method": "CASH"
             }
-            resp_b = await client.post("/api/bookings/", json=payload)
+            resp_b = await client.post("/api/bookings/", json=payload, headers=pax_headers)
             assert resp_b.status_code == 200
 
             # User bookings list
-            resp_ub = await client.get(f"/api/bookings/my/{pax.telegram_id}")
+            resp_ub = await client.get(f"/api/bookings/my/{pax.telegram_id}", headers=pax_headers)
             assert resp_ub.status_code == 200
             bookings_list = resp_ub.json()
             assert len(bookings_list) == 2
@@ -183,7 +194,7 @@ async def test_api_bookings_full_lifecycle(db_session: AsyncSession, mock_sessio
             resp_st = await client.post("/api/bookings/standing", json={
                 "telegram_id": driver.telegram_id,
                 "trip_id": trip.id
-            })
+            }, headers=driver_headers)
             assert resp_st.status_code == 200
 
             # Quick sale parcel by driver
@@ -192,9 +203,9 @@ async def test_api_bookings_full_lifecycle(db_session: AsyncSession, mock_sessio
                 "trip_id": trip.id,
                 "description": "Box of papers",
                 "price": 80.0
-            })
+            }, headers=driver_headers)
             assert resp_pr.status_code == 200
 
             # Cancel passenger booking
-            resp_can = await client.patch(f"/api/bookings/{booking_id}/cancel?telegram_id={pax.telegram_id}")
+            resp_can = await client.patch(f"/api/bookings/{booking_id}/cancel?telegram_id={pax.telegram_id}", headers=pax_headers)
             assert resp_can.status_code == 200

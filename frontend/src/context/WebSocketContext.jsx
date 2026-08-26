@@ -13,12 +13,15 @@ export function WebSocketProvider({ children }) {
     const hostname = window.location.hostname || 'localhost';
     const port = window.location.port;
 
+    const token = localStorage.getItem('admin_token');
+    const tokenQuery = token ? '?token=' + encodeURIComponent(token) : '';
+
     // If running under Vite dev server (e.g. port 3000 or 5173), target backend 8000 directly
     if (port === '3000' || port === '5173') {
-      return `${protocol}//${hostname}:8000/ws`;
+      return `${protocol}//${hostname}:8000/ws` + tokenQuery;
     }
     // Production or proxied host
-    return `${protocol}//${window.location.host}/ws`;
+    return `${protocol}//${window.location.host}/ws` + tokenQuery;
   };
 
   const connect = () => {

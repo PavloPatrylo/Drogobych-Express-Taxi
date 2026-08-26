@@ -45,6 +45,8 @@ async def test_get_locations_api(db_session: AsyncSession):
     app.dependency_overrides.clear()
 
 
+from app.services.auth_service import create_access_token
+
 @pytest.mark.asyncio
 async def test_search_trips_and_detail_api(db_session: AsyncSession, sample_trip: Trip):
     async def override_get_db():
@@ -61,6 +63,7 @@ async def test_search_trips_and_detail_api(db_session: AsyncSession, sample_trip
     from unittest.mock import patch, AsyncMock
 
     with patch("app.db.database.async_session_maker", return_value=SessionContext()), \
+         patch("app.api.deps.async_session_maker", return_value=SessionContext()), \
          patch("app.api.trips.async_session_maker", return_value=SessionContext()), \
          patch("app.services.reminders.auto_close_expired_trips", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -83,17 +86,19 @@ async def test_search_trips_and_detail_api(db_session: AsyncSession, sample_trip
             driver = User(phone="+380970009988", full_name="Manifest Driver", role=UserRole.DRIVER, telegram_id=888777, is_active=True)
             db_session.add(driver)
             await db_session.commit()
+            token = create_access_token(driver.id, driver.role)
+            headers = {"Authorization": f"Bearer {token}"}
 
             sample_trip.driver_id = driver.id
             await db_session.commit()
 
-            resp_manifest = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date={travel_date_str}")
+            resp_manifest = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date={travel_date_str}", headers=headers)
             assert resp_manifest.status_code == 200
             manifest_data = resp_manifest.json()
             assert len(manifest_data) >= 1
 
-            # 403 for non-existent driver
+            # 401 for unauthenticated driver
             resp_403 = await client.get("/api/trips/driver/99999999/manifest")
-            assert resp_403.status_code == 403
+            assert resp_403.status_code == 401
 
     app.dependency_overrides.clear()

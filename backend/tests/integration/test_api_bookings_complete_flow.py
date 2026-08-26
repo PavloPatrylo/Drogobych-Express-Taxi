@@ -8,6 +8,8 @@ from app.main import app
 from app.db.models import User, UserRole, Trip, TripStatus, Booking, BookingType, BookingSource, BookingStatus, PaymentMethod
 
 
+from app.services.auth_service import create_access_token
+
 @pytest.mark.asyncio
 async def test_passenger_booking_creation_and_my_bookings(db_session: AsyncSession, sample_trip: Trip):
     passenger = User(
@@ -19,6 +21,8 @@ async def test_passenger_booking_creation_and_my_bookings(db_session: AsyncSessi
     )
     db_session.add(passenger)
     await db_session.commit()
+    token = create_access_token(passenger.id, passenger.role)
+    headers = {"Authorization": f"Bearer {token}"}
 
     sample_trip.status = TripStatus.SCHEDULED
     sample_trip.departure_time = datetime.now(timezone.utc) + timedelta(hours=5)
@@ -30,7 +34,8 @@ async def test_passenger_booking_creation_and_my_bookings(db_session: AsyncSessi
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-    with patch("app.api.bookings.async_session_maker", return_value=SessionContext()), \
+    with patch("app.api.deps.async_session_maker", return_value=SessionContext()), \
+         patch("app.api.bookings.async_session_maker", return_value=SessionContext()), \
          patch("app.api.bookings.manager.broadcast", new_callable=AsyncMock):
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
@@ -38,17 +43,17 @@ async def test_passenger_booking_creation_and_my_bookings(db_session: AsyncSessi
             resp_create = await client.post(
                 "/api/bookings/",
                 json={
-                    "telegram_id": passenger.telegram_id,
                     "trip_id": sample_trip.id,
                     "requested_seats": 2,
                     "payment_method": "CASH",
                 },
+                headers=headers,
             )
             assert resp_create.status_code == 200
             assert "Успішно заброньовано" in resp_create.json()["message"]
 
             # 2. GET /api/bookings/my/{telegram_id}
-            resp_my = await client.get(f"/api/bookings/my/{passenger.telegram_id}")
+            resp_my = await client.get(f"/api/bookings/my/{passenger.telegram_id}", headers=headers)
             assert resp_my.status_code == 200
             bookings_list = resp_my.json()
             assert len(bookings_list) == 2
@@ -58,17 +63,19 @@ async def test_passenger_booking_creation_and_my_bookings(db_session: AsyncSessi
             resp_cancel = await client.patch(
                 f"/api/bookings/{booking_id}/cancel",
                 params={"telegram_id": passenger.telegram_id},
+                headers=headers,
             )
             assert resp_cancel.status_code == 200
             assert "успішно скасовано" in resp_cancel.json()["message"]
 
-            # 4. PATCH /api/bookings/{booking_id}/status (Boarding status update by driver)
+            # 4. A passenger cannot change a ticket boarding status.
             other_booking_id = bookings_list[1]["id"]
             resp_status = await client.patch(
                 f"/api/bookings/{other_booking_id}/status",
                 json={"status": "BOARDED"},
+                headers=headers,
             )
-            assert resp_status.status_code == 200
+            assert resp_status.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -82,6 +89,8 @@ async def test_driver_quick_sales_flow(db_session: AsyncSession, sample_trip: Tr
     )
     db_session.add(driver)
     await db_session.commit()
+    token = create_access_token(driver.id, driver.role)
+    headers = {"Authorization": f"Bearer {token}"}
 
     sample_trip.driver_id = driver.id
     sample_trip.status = TripStatus.BOARDING
@@ -95,27 +104,31 @@ async def test_driver_quick_sales_flow(db_session: AsyncSession, sample_trip: Tr
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-    with patch("app.api.bookings.async_session_maker", return_value=SessionContext()), \
+    with patch("app.api.deps.async_session_maker", return_value=SessionContext()), \
+         patch("app.api.bookings.async_session_maker", return_value=SessionContext()), \
          patch("app.api.bookings.manager.broadcast", new_callable=AsyncMock):
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
             # 1. POST /api/bookings/seated (Quick sale seated)
             resp_seated = await client.post(
                 "/api/bookings/seated",
-                json={"telegram_id": driver.telegram_id, "trip_id": sample_trip.id},
+                json={"trip_id": sample_trip.id},
+                headers=headers,
             )
             assert resp_seated.status_code == 200
 
             resp_seated_2 = await client.post(
                 "/api/bookings/seated",
-                json={"telegram_id": driver.telegram_id, "trip_id": sample_trip.id},
+                json={"trip_id": sample_trip.id},
+                headers=headers,
             )
             assert resp_seated_2.status_code == 200
 
             # 2. POST /api/bookings/standing (Quick sale standing after seated is full)
             resp_standing = await client.post(
                 "/api/bookings/standing",
-                json={"telegram_id": driver.telegram_id, "trip_id": sample_trip.id},
+                json={"trip_id": sample_trip.id},
+                headers=headers,
             )
             assert resp_standing.status_code == 200
 
@@ -123,10 +136,10 @@ async def test_driver_quick_sales_flow(db_session: AsyncSession, sample_trip: Tr
             resp_parcel = await client.post(
                 "/api/bookings/parcel",
                 json={
-                    "telegram_id": driver.telegram_id,
                     "trip_id": sample_trip.id,
                     "description": "Important documents",
                     "price": 120.0,
                 },
+                headers=headers,
             )
             assert resp_parcel.status_code == 200

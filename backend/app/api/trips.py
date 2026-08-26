@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from datetime import date, datetime, time
@@ -7,6 +7,7 @@ from typing import List
 from sqlalchemy.orm import aliased
 from datetime import datetime, timezone
 
+from app.api.deps import get_current_user, get_current_driver
 from app.db.database import async_session_maker
 from app.websocket_manager import manager
 from app.schemas.trip import TripReadPassenger, LocationRead
@@ -63,9 +64,11 @@ async def search_trips(
         if travel_date == now_kyiv.date():
             start_of_day = max(start_of_day, now_kyiv)
 
-        # Шукаємо рейси (status = SCHEDULED або BOARDING)
+        # Шукаємо рейси (status = SCHEDULED або BOARDING) активних водіїв
         stmt = (
             select(Trip)
+            .join(User, Trip.driver_id == User.id)
+            .where(User.is_active == True)
             .where(Trip.from_location_id == from_id)
             .where(Trip.to_location_id == to_id)
             .where(Trip.departure_time >= start_of_day)
@@ -74,7 +77,7 @@ async def search_trips(
             .options(
                 selectinload(Trip.from_location), 
                 selectinload(Trip.to_location),
-                selectinload(Trip.vehicle) # 👈 ДОДАЛИ ЦЕЙ РЯДОК
+                selectinload(Trip.vehicle)
             )
             .order_by(Trip.departure_time)
         )
@@ -117,18 +120,16 @@ async def search_trips(
         return response_trips
     
 # === ОТРИМАТИ МАНІФЕСТ ДЛЯ ВОДІЯ (UC-D1 - FULL) ===
-@router.get("/driver/{telegram_id}/manifest", response_model=list[TripManifest])
-async def get_driver_manifest(telegram_id: int, target_date: str = None):
+@router.get("/driver/manifest", response_model=list[TripManifest])
+async def get_driver_manifest_me(
+    target_date: str = None,
+    current_user: User = Depends(get_current_driver)
+):
     from app.services.reminders import auto_close_expired_trips
     await auto_close_expired_trips()
 
     async with async_session_maker() as session:
-        # 1. Знаходимо водія
-        user_stmt = select(User).where(User.telegram_id == telegram_id, User.role == UserRole.DRIVER)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        
-        if not driver:
-            raise HTTPException(status_code=403, detail="Доступ заборонено")
+        driver = current_user
 
         now_kyiv = datetime.now(KYIV_TZ)
         if target_date:
@@ -139,7 +140,6 @@ async def get_driver_manifest(telegram_id: int, target_date: str = None):
         else:
             filter_date = now_kyiv.date()
 
-        # 2. Отримуємо рейси водія
         FromLoc = aliased(Location)
         ToLoc = aliased(Location)
         
@@ -160,12 +160,10 @@ async def get_driver_manifest(telegram_id: int, target_date: str = None):
                 trip_date_kyiv = dep_aware.astimezone(KYIV_TZ).date()
                 if trip_date_kyiv != filter_date:
                     continue
-            # !!! ОДИНАКОВИЙ ФІЛЬТР ДЛЯ ВСІХ ТИПІВ БРОНЮВАНЬ !!!
-            # Ми обов'язково фільтруємо за trip.id
             bookings_stmt = (
                 select(Booking, User)
                 .outerjoin(User, Booking.passenger_id == User.id)
-                .where(Booking.trip_id == trip.id)  # <--- ЦЕЙ РЯДОК РОЗДІЛЯЄ БРОНЮВАННЯ ПО РЕЙСАХ
+                .where(Booking.trip_id == trip.id)
                 .where(Booking.status != BookingStatus.CANCELLED)
             )
             bookings_rows = (await session.execute(bookings_stmt)).all()
@@ -174,25 +172,21 @@ async def get_driver_manifest(telegram_id: int, target_date: str = None):
             booked_seated_count = 0
             
             for booking, passenger in bookings_rows:
-                # Рахуємо тільки сидячі для ліміту місць в автобусі
                 if booking.booking_type == BookingType.SEATED:
                     booked_seated_count += booking.passengers_count
                 
-                # 👇 ДОДАЙ ЦЕЙ БЛОК ДЛЯ ПРАВИЛЬНОГО ІМЕНІ 👇
                 if passenger:
                     display_name = passenger.full_name
                 elif booking.booking_type.name == 'STANDING':
                     display_name = "Стоячий пасажир"
                 elif booking.booking_type.name == 'PARCEL':
-                    # Якщо водій ввів опис (наприклад телефон), покажемо його
                     display_name = f"Посилка: {booking.comment}" if getattr(booking, 'comment', None) else "Посилка"
                 else:
                     display_name = "Запис"
-                # 👆 КІНЕЦЬ НОВОГО БЛОКУ 👆
 
                 passengers.append({
                     "booking_id": booking.id,
-                    "full_name": display_name, # <--- ТУТ ТЕПЕР ВИКОРИСТОВУЄМО display_name
+                    "full_name": display_name,
                     "phone": passenger.phone if passenger else "-",
                     "seats": booking.passengers_count,
                     "status": booking.status.name,
@@ -211,24 +205,37 @@ async def get_driver_manifest(telegram_id: int, target_date: str = None):
             })
 
         return manifests
+
+
+@router.get("/driver/{telegram_id}/manifest", response_model=list[TripManifest])
+async def get_driver_manifest(
+    telegram_id: int,
+    target_date: str = None,
+    current_user: User = Depends(get_current_driver)
+):
+    if current_user.telegram_id != telegram_id and current_user.role not in (UserRole.ADMIN, UserRole.DISPATCHER):
+        raise HTTPException(status_code=403, detail="Доступ заборонено")
+    return await get_driver_manifest_me(target_date=target_date, current_user=current_user)
     
 # === ЗМІНА СТАТУСУ РЕЙСУ (UC-D2 та Скасування Диспетчером) ===
 @router.patch("/{trip_id}/status")
-async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatusUpdate):
+async def update_trip_status(
+    trip_id: int,
+    payload: TripStatusUpdate,
+    telegram_id: int | None = None,
+    current_user: User = Depends(get_current_user)
+):
+    actor = current_user
     async with async_session_maker() as session:
-        # 1. Знаходимо користувача, який робить запит (Водій або Диспетчер)
-        user_stmt = select(User).where(User.telegram_id == telegram_id)
-        actor = (await session.execute(user_stmt)).scalar_one_or_none()
-        
-        if not actor:
-            raise HTTPException(status_code=403, detail="Доступ заборонено")
-
         # 2. Знаходимо рейс
         trip_stmt = select(Trip).where(Trip.id == trip_id)
         trip = (await session.execute(trip_stmt)).scalar_one_or_none()
         
         if not trip:
             raise HTTPException(status_code=404, detail="Рейс не знайдено")
+
+        if actor.role == UserRole.DRIVER and trip.driver_id != actor.id:
+            raise HTTPException(status_code=403, detail="Ви можете змінювати статус лише власного рейсу")
 
         current_status = trip.status.name if hasattr(trip.status, 'name') else trip.status
         requested_status = payload.status
@@ -298,20 +305,17 @@ async def update_trip_status(trip_id: int, telegram_id: int, payload: TripStatus
         return {"message": f"Статус рейсу змінено на {requested_status}"}
 
 # === ФІНАНСОВИЙ ЗВІТ ВОДІЯ ЗА ДЕНЬ (КИЇВСЬКИЙ ЧАС) ===
-@router.get("/driver/{telegram_id}/summary")
-async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
+@router.get("/driver/summary")
+async def get_driver_daily_summary_me(
+    target_date: str = None,
+    current_user: User = Depends(get_current_driver)
+):
     async with async_session_maker() as session:
-        user_stmt = select(User).where(User.telegram_id == telegram_id, User.role == UserRole.DRIVER)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        if not driver:
-            raise HTTPException(status_code=403, detail="Доступ заборонено")
+        driver = current_user
 
-        # 1. Визначаємо поточну дату в Києві
         now_kyiv = datetime.now(KYIV_TZ)
-        
         if target_date:
             try:
-                # Очікуємо рядок YYYY-MM-DD з фронтенду
                 filter_date = datetime.strptime(target_date, "%Y-%m-%d").date()
             except ValueError:
                 filter_date = now_kyiv.date()
@@ -352,7 +356,6 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
             standing = sum(b.passengers_count for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'STANDING')
             parcels = sum(1 for b in bookings if (b.booking_type.name if hasattr(b.booking_type, 'name') else str(b.booking_type)).upper() == 'PARCEL')
             
-            # Розрахункова сума рейсів (Скільки водій ПОВИНЕН здати за підсумками активних квитків)
             expected_trip_sum = sum(float(b.amount_paid or 0) for b in bookings)
 
             c_cash = float(trip.submitted_cash) if trip.submitted_cash is not None else expected_trip_sum
@@ -388,14 +391,26 @@ async def get_driver_daily_summary(telegram_id: int, target_date: str = None):
         }
 
 
+@router.get("/driver/{telegram_id}/summary")
+async def get_driver_daily_summary(
+    telegram_id: int,
+    target_date: str = None,
+    current_user: User = Depends(get_current_driver)
+):
+    if current_user.telegram_id != telegram_id and current_user.role not in (UserRole.ADMIN, UserRole.DISPATCHER):
+        raise HTTPException(status_code=403, detail="Доступ заборонено")
+    return await get_driver_daily_summary_me(target_date=target_date, current_user=current_user)
+
+
 # === ОПУБЛІКОВАНИЙ ГРАФІК ВОДІЯ (ДЛЯ TELEGRAM MINI APP) ===
-@router.get("/driver/{telegram_id}/published-schedule")
-async def get_driver_published_schedule(telegram_id: int, date_from: str = None, date_to: str = None):
+@router.get("/driver/published-schedule")
+async def get_driver_published_schedule_me(
+    date_from: str = None,
+    date_to: str = None,
+    current_user: User = Depends(get_current_driver)
+):
     async with async_session_maker() as session:
-        user_stmt = select(User).where(User.telegram_id == telegram_id, User.role == UserRole.DRIVER)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        if not driver:
-            raise HTTPException(status_code=403, detail="Доступ заборонено")
+        driver = current_user
 
         now_kyiv = datetime.now(KYIV_TZ)
         if date_from and date_to:
@@ -483,3 +498,15 @@ async def get_driver_published_schedule(telegram_id: int, date_from: str = None,
             "comment": pub_comment,
             "trips": schedule_trips
         }
+
+
+@router.get("/driver/{telegram_id}/published-schedule")
+async def get_driver_published_schedule(
+    telegram_id: int,
+    date_from: str = None,
+    date_to: str = None,
+    current_user: User = Depends(get_current_driver)
+):
+    if current_user.telegram_id != telegram_id and current_user.role not in (UserRole.ADMIN, UserRole.DISPATCHER):
+        raise HTTPException(status_code=403, detail="Доступ заборонено")
+    return await get_driver_published_schedule_me(date_from=date_from, date_to=date_to, current_user=current_user)

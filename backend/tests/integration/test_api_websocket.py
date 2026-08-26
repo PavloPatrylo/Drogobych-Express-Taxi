@@ -1,14 +1,23 @@
 import pytest
 from starlette.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
 from app.websocket_manager import manager
+from app.db.models import User, UserRole
+from app.services.auth_service import create_access_token
 
 
-def test_websocket_ping_pong_and_manager():
+@pytest.mark.asyncio
+async def test_websocket_ping_pong_and_manager(db_session: AsyncSession):
+    user = User(phone="+380970001122", full_name="WS User", role=UserRole.PASSENGER, is_active=True)
+    db_session.add(user)
+    await db_session.commit()
+
     client = TestClient(app)
+    token = create_access_token(user.id, user.role)
 
-    with client.websocket_connect("/ws?telegram_id=100200300") as websocket:
+    with client.websocket_connect(f"/ws?token={token}") as websocket:
         websocket.send_text("ping")
         data = websocket.receive_text()
         assert '{"event":"pong"}' in data

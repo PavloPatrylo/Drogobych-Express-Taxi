@@ -192,11 +192,11 @@
     <!-- Екран блокування для незареєстрованого користувача -->
     <div id="unregistered-lock-screen" class="fixed inset-0 bg-yellow-400 z-50 flex flex-col items-center justify-center p-6 text-center space-y-4 hidden">
         <div class="w-20 h-20 bg-black/10 rounded-full flex items-center justify-center text-4xl shadow-inner mb-2">📱</div>
-        <h1 class="text-2xl font-black text-black">Реєстрацію не завершено</h1>
-        <p class="text-sm font-semibold text-black/80 max-w-xs leading-relaxed">
+        <h1 id="lock-screen-title" class="text-2xl font-black text-black">Реєстрацію не завершено</h1>
+        <p id="lock-screen-desc" class="text-sm font-semibold text-black/80 max-w-xs leading-relaxed">
             Для користування Express Taxi поділіться номером телефону у чаті Telegram-бота.
         </p>
-        <div class="p-4 bg-black/10 rounded-2xl border border-black/20 text-xs font-bold text-black max-w-xs">
+        <div id="lock-screen-box" class="p-4 bg-black/10 rounded-2xl border border-black/20 text-xs font-bold text-black max-w-xs">
             👉 Закрийте MiniApp, натисніть <b>«📱 Поділитися номером»</b> у чаті бота та спробуйте зайти знову!
         </div>
     </div>

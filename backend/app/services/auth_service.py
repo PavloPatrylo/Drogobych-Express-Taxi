@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.security import verify_password  # <-- Імпортуємо наш надійний верифікатор
 
 def create_access_token(user_id: int, role: UserRole):
-    expire = datetime.utcnow() + timedelta(minutes=60 * 24)
+    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     data = {"sub": str(user_id), "role": role.value, "exp": expire}
     return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
 

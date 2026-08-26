@@ -78,3 +78,53 @@ async def test_staff_management_crud_api(db_session: AsyncSession, admin_user: U
         assert resp_del_404.status_code == 404
 
     app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_delete_driver_with_trips_hides_trips_from_passengers(db_session: AsyncSession, admin_user: User, sample_trip):
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    token = create_access_token(admin_user.id, admin_user.role)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Assign sample_trip to a specific driver
+    driver = User(phone="+380979990011", full_name="Driver To Delete", role=UserRole.DRIVER, is_active=True)
+    db_session.add(driver)
+    await db_session.commit()
+
+    sample_trip.driver_id = driver.id
+    await db_session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        # 1. Before deletion, passenger can find trip via search
+        travel_date_str = sample_trip.departure_time.strftime("%Y-%m-%d")
+        resp_before = await client.get(
+            "/api/trips/search",
+            params={"from_id": sample_trip.from_location_id, "to_id": sample_trip.to_location_id, "travel_date": travel_date_str}
+        )
+        assert resp_before.status_code == 200
+        trip_ids_before = [t["id"] for t in resp_before.json()]
+        assert sample_trip.id in trip_ids_before
+
+        # 2. Delete driver who has active trips
+        resp_del = await client.delete(f"/api/admin/auth/staff/{driver.id}", headers=headers)
+        assert resp_del.status_code == 200
+        assert resp_del.json()["is_active"] is False
+
+        # 3. Driver account is deactivated in DB
+        await db_session.refresh(driver)
+        assert driver.is_active is False
+
+        # 4. After driver deletion, trip is HIDDEN from passenger search results
+        resp_after = await client.get(
+            "/api/trips/search",
+            params={"from_id": sample_trip.from_location_id, "to_id": sample_trip.to_location_id, "travel_date": travel_date_str}
+        )
+        assert resp_after.status_code == 200
+        trip_ids_after = [t["id"] for t in resp_after.json()]
+        assert sample_trip.id not in trip_ids_after
+
+    app.dependency_overrides.clear()

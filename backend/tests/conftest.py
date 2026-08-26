@@ -49,9 +49,23 @@ async def db_session(db_engine, monkeypatch):
         cm = SingleSessionContextManager(session)
         session_factory_wrapper = lambda: cm
         monkeypatch.setattr("app.db.database.async_session_maker", session_factory_wrapper)
+        monkeypatch.setattr("app.api.deps.async_session_maker", session_factory_wrapper)
         monkeypatch.setattr("app.api.bookings.async_session_maker", session_factory_wrapper)
         monkeypatch.setattr("app.api.trips.async_session_maker", session_factory_wrapper)
+        monkeypatch.setattr("app.services.reminders.async_session_maker", session_factory_wrapper)
+        from unittest.mock import AsyncMock
+        monkeypatch.setattr("app.services.reminders.start_reminder_scheduler", AsyncMock())
+        monkeypatch.setattr("bot.main_bot.dp.start_polling", AsyncMock())
+        async def override_get_db():
+            yield session
+
+        from app.main import app
+        from app.db.database import get_db
+        app.dependency_overrides[get_db] = override_get_db
+
         yield session
+
+        app.dependency_overrides.clear()
 
 
 # Helper Model Factories

@@ -5,7 +5,7 @@ from app.db.models import User
 
 async def delete_user_22():
     async with async_session_maker() as session:
-        user = (await session.execute(select(User).where(User.id == 25))).scalar_one_or_none()
+        user = (await session.execute(select(User).where(User.id == 30))).scalar_one_or_none()
         if not user:
             users = (await session.execute(select(User).order_by(User.id.desc()))).scalars().all()
             print("Current users in DB:")

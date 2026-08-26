@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Імпортуємо роутери
+from app.api.auth import router as public_auth_router
 from app.api.users import router as users_router 
 from app.api.trips import router as trips_router
 from app.api.bookings import router as bookings_router
@@ -12,26 +13,32 @@ from app.api.admin import audit, auth, broadcast, crm, finance, schedule, vehicl
 
 from app.api.ws import router as ws_router
 
+from app.core.config import settings
+
 app = FastAPI(title="Drogobych Express Taxi API")
 
 admin_router = APIRouter()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=settings.CORS_ORIGINS, 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 @app.middleware("http")
-async def add_ngrok_skip_header(request, call_next):
+async def add_custom_headers(request, call_next):
     response = await call_next(request)
     response.headers["ngrok-skip-browser-warning"] = "true"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
 
 # Підключаємо роутери
 app.include_router(ws_router)
+app.include_router(public_auth_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(trips_router, prefix="/api")
 app.include_router(bookings_router, prefix="/api")

@@ -44,9 +44,9 @@ async def test_list_locations_filters_invalid_names(db_session: AsyncSession):
 async def test_get_system_config_creates_default(db_session: AsyncSession):
     config = await get_system_config_use_case(db_session)
     assert config.id == 1
-    assert config.price_seated == 120.0
-    assert config.price_standing == 80.0
-    assert config.price_parcel == 50.0
+    assert config.price_seated == 200.0
+    assert config.price_standing == 150.0
+    assert config.price_parcel == 100.0
 
 
 @pytest.mark.asyncio

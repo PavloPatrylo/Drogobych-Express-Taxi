@@ -13,6 +13,8 @@ from app.services.auth_service import create_access_token
 async def test_users_api_get_and_update(db_session: AsyncSession, passenger_user: User):
     passenger_user.telegram_id = 99887766
     await db_session.commit()
+    token = create_access_token(passenger_user.id, passenger_user.role)
+    headers = {"Authorization": f"Bearer {token}"}
     stats = UserStats(user_id=passenger_user.id, total_trips=2, total_noshows=0)
     db_session.add(stats)
     await db_session.commit()
@@ -23,21 +25,29 @@ async def test_users_api_get_and_update(db_session: AsyncSession, passenger_user
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-    with patch("app.api.users.async_session_maker", return_value=SessionContext()):
+    with patch("app.api.deps.async_session_maker", return_value=SessionContext()), \
+         patch("app.api.users.async_session_maker", return_value=SessionContext()):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
             # GET user profile by telegram_id
-            resp_get = await client.get(f"/api/users/{passenger_user.telegram_id}")
+            resp_get = await client.get(f"/api/users/{passenger_user.telegram_id}", headers=headers)
             assert resp_get.status_code == 200
             assert resp_get.json()["telegram_id"] == passenger_user.telegram_id
 
             # GET non-existent -> 404
-            resp_404 = await client.get("/api/users/99999999")
+            admin_user = User(phone="+380971110077", full_name="Admin", role=UserRole.ADMIN, telegram_id=999999997, is_active=True)
+            db_session.add(admin_user)
+            await db_session.commit()
+            admin_token = create_access_token(admin_user.id, admin_user.role)
+            admin_headers = {"Authorization": f"Bearer {admin_token}"}
+            
+            resp_404 = await client.get("/api/users/99999999", headers=admin_headers)
             assert resp_404.status_code == 404
 
             # PUT update user profile
             resp_put = await client.put(
                 f"/api/users/{passenger_user.telegram_id}",
                 json={"full_name": "Updated Passenger Name"},
+                headers=headers,
             )
             assert resp_put.status_code == 200
             assert resp_put.json()["full_name"] == "Updated Passenger Name"

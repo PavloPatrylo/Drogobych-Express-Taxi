@@ -27,32 +27,37 @@ def session_cm(db_session: AsyncSession):
     return SingleSessionContextManager(db_session)
 
 
+from app.services.auth_service import create_access_token
+
 @pytest.mark.asyncio
 async def test_bookings_create_validation_and_errors(db_session: AsyncSession, session_cm):
     with (
+        patch("app.api.deps.async_session_maker", return_value=session_cm),
         patch("app.api.bookings.async_session_maker", return_value=session_cm),
         patch("app.api.trips.async_session_maker", return_value=session_cm),
         patch("app.services.reminders.async_session_maker", return_value=session_cm),
         patch("app.websocket_manager.manager.broadcast", AsyncMock()),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
-            # 1. User not found (telegram_id does not exist)
+            # 1. Unauthenticated request -> 401
             resp_no_user = await client.post(
                 "/api/bookings/",
                 json={"telegram_id": 999888777, "trip_id": 1, "requested_seats": 1}
             )
-            assert resp_no_user.status_code == 400
-            assert "Спочатку пройдіть реєстрацію" in resp_no_user.json()["detail"]
+            assert resp_no_user.status_code == 401
 
             # Register user
             user = User(full_name="Booking User", phone="+380971112233", telegram_id=987654321, role=UserRole.PASSENGER, is_active=True)
             db_session.add(user)
             await db_session.commit()
+            token = create_access_token(user.id, user.role)
+            headers = {"Authorization": f"Bearer {token}"}
 
             # 2. Trip not found (trip_id does not exist)
             resp_no_trip = await client.post(
                 "/api/bookings/",
-                json={"telegram_id": 987654321, "trip_id": 99999, "requested_seats": 1}
+                json={"telegram_id": 987654321, "trip_id": 99999, "requested_seats": 1},
+                headers=headers,
             )
             assert resp_no_trip.status_code == 404
             assert "Рейс не знайдено" in resp_no_trip.json()["detail"]
@@ -84,7 +89,8 @@ async def test_bookings_create_validation_and_errors(db_session: AsyncSession, s
 
             resp_past = await client.post(
                 "/api/bookings/",
-                json={"telegram_id": 987654321, "trip_id": past_trip.id, "requested_seats": 1}
+                json={"telegram_id": 987654321, "trip_id": past_trip.id, "requested_seats": 1},
+                headers=headers,
             )
             assert resp_past.status_code == 400
             assert "вже виїхав" in resp_past.json()["detail"]
@@ -109,7 +115,8 @@ async def test_bookings_create_validation_and_errors(db_session: AsyncSession, s
 
             resp_comp = await client.post(
                 "/api/bookings/",
-                json={"telegram_id": 987654321, "trip_id": comp_trip.id, "requested_seats": 1}
+                json={"telegram_id": 987654321, "trip_id": comp_trip.id, "requested_seats": 1},
+                headers=headers,
             )
             assert resp_comp.status_code == 400
             assert "вже вирушив або завершений" in resp_comp.json()["detail"]
@@ -134,7 +141,8 @@ async def test_bookings_create_validation_and_errors(db_session: AsyncSession, s
 
             resp_over = await client.post(
                 "/api/bookings/",
-                json={"telegram_id": 987654321, "trip_id": fut_trip.id, "requested_seats": 5}
+                json={"telegram_id": 987654321, "trip_id": fut_trip.id, "requested_seats": 5},
+                headers=headers,
             )
             assert resp_over.status_code == 400
             assert "місця щойно закінчилися" in resp_over.json()["detail"]
@@ -142,7 +150,8 @@ async def test_bookings_create_validation_and_errors(db_session: AsyncSession, s
             # 6. Successful booking with CARD payment method
             resp_ok = await client.post(
                 "/api/bookings/",
-                json={"telegram_id": 987654321, "trip_id": fut_trip.id, "requested_seats": 2, "payment_method": "CARD"}
+                json={"telegram_id": 987654321, "trip_id": fut_trip.id, "requested_seats": 2, "payment_method": "CARD"},
+                headers=headers,
             )
             assert resp_ok.status_code == 200
             assert "Успішно заброньовано 2 місць" in resp_ok.json()["message"]
@@ -151,6 +160,7 @@ async def test_bookings_create_validation_and_errors(db_session: AsyncSession, s
 @pytest.mark.asyncio
 async def test_my_bookings_and_cancel_flow(db_session: AsyncSession, session_cm):
     with (
+        patch("app.api.deps.async_session_maker", return_value=session_cm),
         patch("app.api.bookings.async_session_maker", return_value=session_cm),
         patch("app.api.trips.async_session_maker", return_value=session_cm),
         patch("app.services.reminders.async_session_maker", return_value=session_cm),
@@ -164,6 +174,8 @@ async def test_my_bookings_and_cancel_flow(db_session: AsyncSession, session_cm)
             veh = Vehicle(model="Sprinter", plate_number="BC2222BB", total_seats=15, total_standing=3, is_active=True)
             db_session.add_all([user, loc1, loc2, veh])
             await db_session.commit()
+            token = create_access_token(user.id, user.role)
+            headers = {"Authorization": f"Bearer {token}"}
 
             trip = Trip(
                 driver_id=user.id,
@@ -197,20 +209,20 @@ async def test_my_bookings_and_cancel_flow(db_session: AsyncSession, session_cm)
             await db_session.commit()
 
             # Get my bookings - success
-            resp_my = await client.get(f"/api/bookings/my/{user.telegram_id}")
+            resp_my = await client.get(f"/api/bookings/my/{user.telegram_id}", headers=headers)
             assert resp_my.status_code == 200
             assert len(resp_my.json()) == 1
 
             # Cancel booking - booking not found 404
-            resp_cancel_404 = await client.patch(f"/api/bookings/99999/cancel?telegram_id={user.telegram_id}")
+            resp_cancel_404 = await client.patch(f"/api/bookings/99999/cancel?telegram_id={user.telegram_id}", headers=headers)
             assert resp_cancel_404.status_code == 404
 
-            # Cancel booking - unauthorized user 403
+            # Cancel booking - unauthorized user 403 / 401
             resp_cancel_403 = await client.patch(f"/api/bookings/{booking.id}/cancel?telegram_id=999888000")
-            assert resp_cancel_403.status_code == 403
+            assert resp_cancel_403.status_code in (401, 403)
 
             # Cancel booking - success
-            resp_cancel_ok = await client.patch(f"/api/bookings/{booking.id}/cancel?telegram_id={user.telegram_id}")
+            resp_cancel_ok = await client.patch(f"/api/bookings/{booking.id}/cancel?telegram_id={user.telegram_id}", headers=headers)
             assert resp_cancel_ok.status_code == 200
             assert "скасовано" in resp_cancel_ok.json()["message"]
 
@@ -218,6 +230,7 @@ async def test_my_bookings_and_cancel_flow(db_session: AsyncSession, session_cm)
 @pytest.mark.asyncio
 async def test_standing_and_parcel_quick_sales(db_session: AsyncSession, session_cm):
     with (
+        patch("app.api.deps.async_session_maker", return_value=session_cm),
         patch("app.api.bookings.async_session_maker", return_value=session_cm),
         patch("app.api.trips.async_session_maker", return_value=session_cm),
         patch("app.services.reminders.async_session_maker", return_value=session_cm),
@@ -230,6 +243,8 @@ async def test_standing_and_parcel_quick_sales(db_session: AsyncSession, session
             veh = Vehicle(model="Sprinter", plate_number="BC3333CC", total_seats=0, total_standing=1, is_active=True)
             db_session.add_all([driver, loc1, loc2, veh])
             await db_session.commit()
+            token = create_access_token(driver.id, driver.role)
+            headers = {"Authorization": f"Bearer {token}"}
 
             trip = Trip(
                 driver_id=driver.id,
@@ -251,28 +266,32 @@ async def test_standing_and_parcel_quick_sales(db_session: AsyncSession, session
             # 1. Add standing passenger - trip not found 404
             resp_st_404 = await client.post(
                 "/api/bookings/standing",
-                json={"trip_id": 99999, "telegram_id": driver.telegram_id}
+                json={"trip_id": 99999, "telegram_id": driver.telegram_id},
+                headers=headers,
             )
             assert resp_st_404.status_code == 404
 
             # 2. Add standing passenger - success
             resp_st_ok = await client.post(
                 "/api/bookings/standing",
-                json={"trip_id": trip.id, "telegram_id": driver.telegram_id}
+                json={"trip_id": trip.id, "telegram_id": driver.telegram_id},
+                headers=headers,
             )
             assert resp_st_ok.status_code == 200
 
             # 3. Add standing passenger - limit exceeded 400
             resp_st_exceeded = await client.post(
                 "/api/bookings/standing",
-                json={"trip_id": trip.id, "telegram_id": driver.telegram_id}
+                json={"trip_id": trip.id, "telegram_id": driver.telegram_id},
+                headers=headers,
             )
             assert resp_st_exceeded.status_code == 400
 
             # 4. Add parcel - success
             resp_prc_ok = await client.post(
                 "/api/bookings/parcel",
-                json={"trip_id": trip.id, "telegram_id": driver.telegram_id, "description": "Parcel", "price": 80.0}
+                json={"trip_id": trip.id, "telegram_id": driver.telegram_id, "description": "Parcel", "price": 80.0},
+                headers=headers,
             )
             assert resp_prc_ok.status_code == 200
             assert "message" in resp_prc_ok.json()
@@ -281,6 +300,7 @@ async def test_standing_and_parcel_quick_sales(db_session: AsyncSession, session
 @pytest.mark.asyncio
 async def test_trips_search_and_driver_endpoints(db_session: AsyncSession, session_cm):
     with (
+        patch("app.api.deps.async_session_maker", return_value=session_cm),
         patch("app.api.bookings.async_session_maker", return_value=session_cm),
         patch("app.api.trips.async_session_maker", return_value=session_cm),
         patch("app.services.reminders.async_session_maker", return_value=session_cm),
@@ -293,6 +313,8 @@ async def test_trips_search_and_driver_endpoints(db_session: AsyncSession, sessi
             veh = Vehicle(model="Sprinter", plate_number="BC4444DD", total_seats=18, total_standing=4, is_active=True)
             db_session.add_all([driver, loc1, loc2, veh])
             await db_session.commit()
+            token = create_access_token(driver.id, driver.role)
+            headers = {"Authorization": f"Bearer {token}"}
 
             dep_dt = datetime.now(timezone.utc) + timedelta(days=1)
             trip = Trip(
@@ -326,17 +348,18 @@ async def test_trips_search_and_driver_endpoints(db_session: AsyncSession, sessi
             assert len(resp_search.json()) >= 1
 
             # 3. GET /api/trips/driver/{telegram_id}/manifest
-            resp_manifest = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date={target_date_str}")
+            resp_manifest = await client.get(f"/api/trips/driver/{driver.telegram_id}/manifest?target_date={target_date_str}", headers=headers)
             assert resp_manifest.status_code == 200
 
-            # Manifest for non-existent driver 403
+            # Manifest for unauthenticated driver 401
             resp_man_404 = await client.get(f"/api/trips/driver/999000999/manifest?target_date={target_date_str}")
-            assert resp_man_404.status_code == 403
+            assert resp_man_404.status_code == 401
 
             # 4. PATCH /api/trips/{trip_id}/status (Driver updates status)
             resp_st = await client.patch(
                 f"/api/trips/{trip.id}/status?telegram_id={driver.telegram_id}",
-                json={"status": "BOARDING"}
+                json={"status": "BOARDING"},
+                headers=headers,
             )
             assert resp_st.status_code == 200
             assert "message" in resp_st.json()
@@ -344,18 +367,19 @@ async def test_trips_search_and_driver_endpoints(db_session: AsyncSession, sessi
             # Update status 404 trip
             resp_st_404 = await client.patch(
                 f"/api/trips/99999/status?telegram_id={driver.telegram_id}",
-                json={"status": "BOARDING"}
+                json={"status": "BOARDING"},
+                headers=headers,
             )
             assert resp_st_404.status_code == 404
 
-            # Update status unauthorized driver 403
+            # Update status unauthorized driver 401
             resp_st_403 = await client.patch(
                 f"/api/trips/{trip.id}/status?telegram_id=999000999",
                 json={"status": "BOARDING"}
             )
-            assert resp_st_403.status_code == 403
+            assert resp_st_403.status_code == 401
 
             # 5. GET /api/trips/driver/{telegram_id}/summary
-            resp_sum = await client.get(f"/api/trips/driver/{driver.telegram_id}/summary?target_date={target_date_str}")
+            resp_sum = await client.get(f"/api/trips/driver/{driver.telegram_id}/summary?target_date={target_date_str}", headers=headers)
             assert resp_sum.status_code == 200
             assert "total_to_hand_in" in resp_sum.json()

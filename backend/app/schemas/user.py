@@ -44,3 +44,11 @@ class UserRead(UserBase):
 
     class Config:
         from_attributes = True
+
+class TelegramWebAppAuth(BaseModel):
+    init_data: str
+
+class AuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserRead

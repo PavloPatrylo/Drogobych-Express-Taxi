@@ -69,7 +69,7 @@ async def _get_system_config(db: AsyncSession) -> SystemConfig:
     result = await db.execute(select(SystemConfig).where(SystemConfig.id == 1))
     config = result.scalars().first()
     if not config:
-        config = SystemConfig(id=1, price_seated=120.00, price_standing=80.00, price_parcel=50.00)
+        config = SystemConfig(id=1, price_seated=200.00, price_standing=150.00, price_parcel=100.00)
         db.add(config)
         await db.commit()
         await db.refresh(config)
@@ -446,7 +446,7 @@ def trip_to_admin(trip: Trip) -> AdminTripResponse:
         standing_limit_snapshot=trip.standing_limit_snapshot,
         price_seated=_as_float(trip.price_seated),
         price_standing=_as_float(trip.price_standing),
-        price_parcel=_as_float(getattr(trip, 'price_parcel', 100.0) or 100.0),
+        price_parcel=_as_float(trip.price_parcel) if trip.price_parcel is not None else None,
         submitted_amount=_as_float(trip.submitted_amount) if trip.submitted_amount is not None else None,
         submitted_cash=_as_float(trip.submitted_cash) if trip.submitted_cash is not None else None,
         submitted_card=_as_float(trip.submitted_card) if trip.submitted_card is not None else None,
@@ -803,13 +803,14 @@ async def update_trip(
         trip.standing_limit_snapshot = vehicle.total_standing
 
     # Prevent changing trip prices if there are active bookings
-    new_price_seated = float(payload.price_seated)
-    new_price_standing = float(payload.price_standing)
-    new_price_parcel = float(payload.price_parcel) if payload.price_parcel is not None else _as_float(getattr(trip, 'price_parcel', 100.0) or 100.0)
-
+    cfg = await _get_system_config(db)
     cur_price_seated = _as_float(trip.price_seated)
     cur_price_standing = _as_float(trip.price_standing)
-    cur_price_parcel = _as_float(getattr(trip, 'price_parcel', 100.0) or 100.0)
+    cur_price_parcel = _as_float(trip.price_parcel) if trip.price_parcel is not None else _as_float(cfg.price_parcel)
+
+    new_price_seated = float(payload.price_seated)
+    new_price_standing = float(payload.price_standing)
+    new_price_parcel = float(payload.price_parcel) if payload.price_parcel is not None else cur_price_parcel
 
     if (new_price_seated != cur_price_seated or 
         new_price_standing != cur_price_standing or 
@@ -1300,6 +1301,7 @@ async def cancel_booking(
     )
     await db.commit()
     await manager.broadcast("BOOKING_MUTATED", {"trip_id": booking.trip_id})
+    await promote_waitlist_bookings_use_case(db, booking.trip_id)
     await db.refresh(booking)
     return booking_to_admin(booking, passenger)
 
@@ -1761,7 +1763,11 @@ async def create_manifest_booking_use_case(
             )
         unit_price = _as_float(trip.price_standing)
     else:
-        unit_price = _as_float(getattr(trip, 'price_parcel', 100.0) or 100.0)
+        if trip.price_parcel is not None:
+            unit_price = _as_float(trip.price_parcel)
+        else:
+            cfg = await _get_system_config(db)
+            unit_price = _as_float(cfg.price_parcel)
 
     amount = unit_price * payload.seats
 
@@ -2409,3 +2415,70 @@ async def get_finance_closures_history_use_case(
         })
 
     return history
+
+
+async def promote_waitlist_bookings_use_case(db: AsyncSession, trip_id: int) -> list[Booking]:
+    """
+    Перевіряє, чи вивільнилися місця на рейсі trip_id,
+    і автоматично переводить найстаріші бронювання зі статусом WAITLIST
+    у підтверджений статус RESERVED (спочатку сидячі, потім стоячі).
+    """
+    trip = await db.get(Trip, trip_id)
+    if not trip or trip.status in (TripStatus.CANCELLED, TripStatus.CLOSED):
+        return []
+
+    # 1. Рахуємо вже зайняті місця
+    booked_seated_stmt = (
+        select(func.sum(Booking.passengers_count))
+        .where(Booking.trip_id == trip_id)
+        .where(Booking.booking_type == BookingType.SEATED)
+        .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+    )
+    booked_seated = (await db.execute(booked_seated_stmt)).scalar() or 0
+    available_seats = max(0, trip.seats_limit_snapshot - booked_seated)
+
+    booked_standing_stmt = (
+        select(func.sum(Booking.passengers_count))
+        .where(Booking.trip_id == trip_id)
+        .where(Booking.booking_type == BookingType.STANDING)
+        .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+    )
+    booked_standing = (await db.execute(booked_standing_stmt)).scalar() or 0
+    available_standing = max(0, (trip.standing_limit_snapshot or 0) - booked_standing)
+
+    if available_seats <= 0 and available_standing <= 0:
+        return []
+
+    # 2. Беремо квитки зі статусом WAITLIST у порядку черги (created_at ASC)
+    waitlist_stmt = (
+        select(Booking)
+        .where(Booking.trip_id == trip_id)
+        .where(Booking.status == BookingStatus.WAITLIST)
+        .order_by(Booking.created_at.asc())
+        .with_for_update()
+    )
+    waitlist_bookings = (await db.execute(waitlist_stmt)).scalars().all()
+
+    promoted: list[Booking] = []
+    for w_booking in waitlist_bookings:
+        needed = w_booking.passengers_count or 1
+        if available_seats >= needed:
+            w_booking.status = BookingStatus.RESERVED
+            w_booking.booking_type = BookingType.SEATED
+            w_booking.amount_paid = float(trip.price_seated) * needed
+            available_seats -= needed
+            promoted.append(w_booking)
+        elif available_standing >= needed:
+            w_booking.status = BookingStatus.RESERVED
+            w_booking.booking_type = BookingType.STANDING
+            w_booking.amount_paid = float(trip.price_standing) * needed
+            available_standing -= needed
+            promoted.append(w_booking)
+        else:
+            break
+
+    if promoted:
+        await db.commit()
+        await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip_id})
+
+    return promoted

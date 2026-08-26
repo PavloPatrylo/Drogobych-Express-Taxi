@@ -66,7 +66,7 @@ class TripBase(BaseModel):
     arrival_time: Optional[datetime] = None
     price_seated: float
     price_standing: float
-    price_parcel: float = 100.0
+    price_parcel: Optional[float] = None
 
 class TripCreate(TripBase):
     pass
@@ -142,7 +142,7 @@ class AdminTripResponse(BaseModel):
     standing_limit_snapshot: int
     price_seated: float
     price_standing: float
-    price_parcel: float = 100.0
+    price_parcel: Optional[float] = None
     submitted_amount: Optional[float] = None
     submitted_cash: Optional[float] = None
     submitted_card: Optional[float] = None
@@ -372,6 +372,10 @@ class StaffUpdate(BaseModel):
         if not digits.startswith("0"):
             raise ValueError("Номер телефону повинен починатися з 0 (наприклад: 0971234567)")
         return f"+38{digits}"
+
+
+class PasswordResetPayload(BaseModel):
+    password: str
 
 
 class PublishScheduleRequest(BaseModel):

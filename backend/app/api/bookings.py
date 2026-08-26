@@ -1,35 +1,33 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, selectinload
 from datetime import datetime, timezone, timedelta
 
+from app.api.deps import get_current_user, get_current_driver
 from app.db.database import async_session_maker
 from app.db.models import Trip, Booking, User, UserRole, BookingType, BookingSource, BookingStatus, Location, PaymentMethod
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, StandingBookingCreate, ParcelBookingCreate
-from app.services.admin_use_cases import refresh_user_stats
+from app.services.admin_use_cases import refresh_user_stats, promote_waitlist_bookings_use_case, _get_system_config
 from app.websocket_manager import manager
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
 @router.post("/")
-async def create_booking(booking_in: BookingCreate):
+async def create_booking(
+    booking_in: BookingCreate,
+    current_user: User = Depends(get_current_user)
+):
     async with async_session_maker() as session:
-        # 1. Знаходимо пасажира за telegram_id
-        user_stmt = select(User).where(User.telegram_id == booking_in.telegram_id)
-        user_result = await session.execute(user_stmt)
-        user = user_result.scalar_one_or_none()
-
-        if not user:
-            raise HTTPException(status_code=400, detail="Спочатку пройдіть реєстрацію у Telegram-боті та поділіться номером телефону!")
+        user = current_user
 
         # 2. Починаємо транзакцію і БЛОКУЄМО рядок рейсу (захист від Race Condition)
         # with_for_update() - це і є той самий SELECT ... FOR UPDATE з SRS
-        trip_stmt = select(Trip).where(Trip.id == booking_in.trip_id).with_for_update()
+        trip_stmt = select(Trip).options(selectinload(Trip.driver)).where(Trip.id == booking_in.trip_id).with_for_update()
         trip_result = await session.execute(trip_stmt)
         trip = trip_result.scalar_one_or_none()
 
-        if not trip:
+        if not trip or (trip.driver and not trip.driver.is_active):
             raise HTTPException(status_code=404, detail="Рейс не знайдено")
 
         # Перевірка: чи не виїхав рейс раніше поточного часу
@@ -38,52 +36,101 @@ async def create_booking(booking_in: BookingCreate):
         if dep_time and dep_time < now_kyiv:
             raise HTTPException(status_code=400, detail="Цей рейс вже виїхав. Бронювання минулих рейсів неможливе!")
 
-        # 3. Рахуємо вже зайняті місця
-        booked_stmt = (
+        # 3. Рахуємо вже зайняті місця (сидячі та стоячі)
+        booked_seated_stmt = (
             select(func.sum(Booking.passengers_count))
             .where(Booking.trip_id == trip.id)
             .where(Booking.booking_type == BookingType.SEATED)
             .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
         )
-        booked_result = await session.execute(booked_stmt)
-        booked_seats = booked_result.scalar() or 0
+        booked_seated_result = await session.execute(booked_seated_stmt)
+        booked_seats = booked_seated_result.scalar() or 0
+        available_seats = max(0, trip.seats_limit_snapshot - booked_seats)
 
-        # 4. Перевіряємо, чи вистачає місць
-        available_seats = trip.seats_limit_snapshot - booked_seats
-        
-        if available_seats < booking_in.requested_seats:
+        booked_standing_stmt = (
+            select(func.sum(Booking.passengers_count))
+            .where(Booking.trip_id == trip.id)
+            .where(Booking.booking_type == BookingType.STANDING)
+            .where(Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]))
+        )
+        booked_standing_result = await session.execute(booked_standing_stmt)
+        booked_standing = booked_standing_result.scalar() or 0
+        available_standing = max(0, (trip.standing_limit_snapshot or 0) - booked_standing)
+
+        # 4. Інтерактивна логіка: Сидяче -> Запит підтвердження на Стояче / Waitlist -> Waitlist
+        total_vehicle_capacity = trip.seats_limit_snapshot + (trip.standing_limit_snapshot or 0)
+        pref_type = str(getattr(booking_in, "preferred_type", "SEATED") or "SEATED").upper()
+
+        if booking_in.requested_seats > total_vehicle_capacity:
             raise HTTPException(
-                status_code=400, 
-                detail=f"На жаль, місця щойно закінчилися. Доступно: {available_seats}"
+                status_code=400,
+                detail=f"Кількість місць у замовленні ({booking_in.requested_seats}) перевищує місткість авто ({total_vehicle_capacity})."
             )
 
-# Оновлена перевірка статусу
+        if pref_type == "STANDING":
+            if available_standing >= booking_in.requested_seats:
+                target_type = BookingType.STANDING
+                target_status = BookingStatus.RESERVED
+                price_per_ticket = float(trip.price_standing)
+                message_text = f"Успішно заброньовано {booking_in.requested_seats} стоячих місць!"
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"На жаль, стоячі місця щойно закінчилися. Доступно: {available_standing} стоячих місць."
+                )
+        elif pref_type == "WAITLIST":
+            target_type = BookingType.SEATED
+            target_status = BookingStatus.WAITLIST
+            price_per_ticket = 0.0
+            message_text = f"Успішно додано у Список очікування (Waitlist) на {booking_in.requested_seats} місць!"
+        else: # Default: "SEATED"
+            if available_seats >= booking_in.requested_seats:
+                target_type = BookingType.SEATED
+                target_status = BookingStatus.RESERVED
+                price_per_ticket = float(trip.price_seated)
+                message_text = f"Успішно заброньовано {booking_in.requested_seats} місць!"
+            elif available_standing >= booking_in.requested_seats:
+                # Сидячі місця закінчилися, але є стоячі: даємо вибір пасажиру
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Сидячі місця щойно закінчилися. Доступно {available_standing} стоячих місць. Оберіть 'STANDING' для бронювання стоячого місця або 'WAITLIST' для запису в чергу."
+                )
+            elif available_seats == 0 and available_standing == 0 and booking_in.requested_seats <= total_vehicle_capacity:
+                # Усі місця викуплені: даємо можливість увійти в Waitlist
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Усі місця щойно закінчилися. Оберіть 'WAITLIST' для запису в чергу очікування."
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"На жаль, місця щойно закінчилися. Доступно: {available_seats} сидячих, {available_standing} стоячих."
+                )
+
+        # Перевірка статусу рейсу
         current_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
         
-        # Тепер дозволяємо SCHEDULED та BOARDING
         if current_status not in ["SCHEDULED", "BOARDING"]:
             raise HTTPException(
                 status_code=400, 
                 detail="Бронювання неможливе: рейс вже вирушив або завершений."
             )
 
-
-
         pm_val = str(getattr(booking_in, "payment_method", "CASH") or "CASH").upper()
         pm = PaymentMethod.CARD if pm_val == "CARD" else PaymentMethod.CASH
 
-        # 5. Створюємо окремі бронювання для кожного місця (Згідно з логікою 1 квиток = 1 місце)
+        # 5. Створюємо окремі квитки
         for _ in range(booking_in.requested_seats):
             new_booking = Booking(
                 trip_id=trip.id,
                 passenger_id=user.id,
-                created_by_id=user.id, # Пасажир сам створив запис
-                booking_type=BookingType.SEATED,
+                created_by_id=user.id,
+                booking_type=target_type,
                 source=BookingSource.BOT,
-                status=BookingStatus.RESERVED,
+                status=target_status,
                 payment_method=pm,
-                passengers_count=1,            # 👈 ЗАВЖДИ 1 місце на один квиток
-                amount_paid=trip.price_seated  # 👈 Ціна вказується за 1 місце
+                passengers_count=1,
+                amount_paid=price_per_ticket
             )
             session.add(new_booking)
         
@@ -91,23 +138,15 @@ async def create_booking(booking_in: BookingCreate):
         try:
             await session.commit()
             await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
-            return {"message": f"Успішно заброньовано {booking_in.requested_seats} місць!"}
+            return {"message": message_text}
         except IntegrityError:
             await session.rollback()
             raise HTTPException(status_code=500, detail="Помилка бази даних при бронюванні")
         
 # === 1. ОТРИМАТИ МОЇ КВИТКИ (UC-P4) ===
-@router.get("/my/{telegram_id}", response_model=list[BookingRead])
-async def get_my_bookings(telegram_id: int):
+@router.get("/my", response_model=list[BookingRead])
+async def get_my_bookings(current_user: User = Depends(get_current_user)):
     async with async_session_maker() as session:
-        # Шукаємо користувача
-        user_stmt = select(User).where(User.telegram_id == telegram_id)
-        user = (await session.execute(user_stmt)).scalar_one_or_none()
-        if not user:
-            return []
-
-        # Оскільки ми не прописували relationship між Booking і Trip у models.py, 
-        # ми об'єднаємо таблиці (JOIN) прямо тут, щоб дістати назви міст і час.
         FromLoc = aliased(Location)
         ToLoc = aliased(Location)
 
@@ -116,7 +155,7 @@ async def get_my_bookings(telegram_id: int):
             .join(Trip, Booking.trip_id == Trip.id)
             .join(FromLoc, Trip.from_location_id == FromLoc.id)
             .join(ToLoc, Trip.to_location_id == ToLoc.id)
-            .where(Booking.passenger_id == user.id)
+            .where(Booking.passenger_id == current_user.id)
             .order_by(Booking.created_at.desc())
         )
         
@@ -125,22 +164,48 @@ async def get_my_bookings(telegram_id: int):
 
         response = []
         for booking, trip, from_loc, to_loc in rows:
+            pos = None
+            if booking.status == BookingStatus.WAITLIST:
+                pos_stmt = (
+                    select(func.count(Booking.id))
+                    .where(Booking.trip_id == booking.trip_id)
+                    .where(Booking.status == BookingStatus.WAITLIST)
+                    .where(Booking.created_at <= booking.created_at)
+                )
+                pos = (await session.execute(pos_stmt)).scalar() or 1
+
             response.append(BookingRead(
                 id=booking.id,
                 status=booking.status.value,
                 passengers_count=booking.passengers_count,
                 amount_paid=float(booking.amount_paid),
+                payment_method=booking.payment_method.value if hasattr(booking.payment_method, "value") else str(booking.payment_method),
                 trip_departure_time=trip.departure_time,
                 from_location=from_loc.name,
-                to_location=to_loc.name
+                to_location=to_loc.name,
+                waitlist_position=pos,
             ))
             
         return response
 
 
+@router.get("/my/{telegram_id}", response_model=list[BookingRead])
+async def get_my_bookings_by_telegram_id(
+    telegram_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.telegram_id != telegram_id and current_user.role not in (UserRole.ADMIN, UserRole.DISPATCHER):
+        raise HTTPException(status_code=403, detail="Немає доступу до квитків іншого користувача")
+    return await get_my_bookings(current_user=current_user)
+
+
 # === 2. СКАСУВАТИ КВИТОК (UC-P5) ===
 @router.patch("/{booking_id}/cancel")
-async def cancel_booking(booking_id: int, telegram_id: int):
+async def cancel_booking(
+    booking_id: int,
+    telegram_id: int | None = None,
+    current_user: User = Depends(get_current_user)
+):
     async with async_session_maker() as session:
         # Шукаємо квиток та рейс
         stmt = select(Booking, Trip).join(Trip, Booking.trip_id == Trip.id).where(Booking.id == booking_id)
@@ -151,14 +216,12 @@ async def cancel_booking(booking_id: int, telegram_id: int):
             
         booking, trip = result
 
-        # Перевіряємо, чи це квиток саме цього користувача
-        user_stmt = select(User).where(User.telegram_id == telegram_id)
-        user = (await session.execute(user_stmt)).scalar_one_or_none()
-        if not user or booking.passenger_id != user.id:
+        # Перевіряємо об'єктний доступ
+        if booking.passenger_id != current_user.id and current_user.role not in (UserRole.ADMIN, UserRole.DISPATCHER):
             raise HTTPException(status_code=403, detail="Це не ваш квиток")
 
         # Перевіряємо статус
-        if booking.status not in [BookingStatus.RESERVED, BookingStatus.PAID]:
+        if booking.status not in [BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.WAITLIST]:
             raise HTTPException(status_code=400, detail="Цей квиток вже не можна скасувати")
 
         # Скасовуємо у будь-який момент для активного бронювання
@@ -168,13 +231,20 @@ async def cancel_booking(booking_id: int, telegram_id: int):
         await session.commit()
         await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip.id})
         
+        # Автоматично просуваємо найпершого пасажира зі списку очікування (Waitlist)
+        await promote_waitlist_bookings_use_case(session, trip.id)
+
         return {"message": "Бронювання успішно скасовано"}
     
 
 
 # === ОНОВЛЕННЯ СТАТУСУ КВИТКА (UC-D5) ===
 @router.patch("/{booking_id}/status")
-async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
+async def update_booking_status(
+    booking_id: int,
+    payload: BookingStatusUpdate,
+    current_user: User = Depends(get_current_driver),
+):
     async with async_session_maker() as session:
         # Шукаємо конкретний квиток
         stmt = select(Booking).where(Booking.id == booking_id)
@@ -185,6 +255,10 @@ async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
 
         # Перевіряємо статус рейсу: якщо COMPLETED або CLOSED - редагування заборонено
         trip = await session.get(Trip, booking.trip_id)
+        if not trip:
+            raise HTTPException(status_code=404, detail="Trip not found")
+        if current_user.role == UserRole.DRIVER and trip.driver_id != current_user.id:
+            raise HTTPException(status_code=403, detail="This is not your trip")
         if trip:
             t_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)
             if t_status.upper() in ["COMPLETED", "CLOSED"]:
@@ -214,18 +288,12 @@ async def update_booking_status(booking_id: int, payload: BookingStatusUpdate):
 # === ШВИДКИЙ ПРОДАЖ СТОЯЧОГО МІСЦЯ (UC-D3) - БРОНЕБІЙНИЙ ВАРІАНТ ===
 # === ШВИДКИЙ ПРОДАЖ СТОЯЧОГО МІСЦЯ (UC-D3) - ОЧИЩЕНИЙ ВАРІАНТ ===
 @router.post("/standing")
-async def add_standing_passenger(payload: StandingBookingCreate):
+async def add_standing_passenger(
+    payload: StandingBookingCreate,
+    current_user: User = Depends(get_current_driver)
+):
     async with async_session_maker() as session:
-        # 1. Знаходимо водія
-        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        
-        if not driver:
-            raise HTTPException(status_code=403, detail="Водія не знайдено")
-            
-        driver_role = driver.role.name if hasattr(driver.role, 'name') else str(driver.role)
-        if driver_role.upper() != "DRIVER":
-            raise HTTPException(status_code=403, detail="Ви не водій")
+        driver = current_user
 
         # 2. Блокуємо рейс (SELECT FOR UPDATE)
         trip_stmt = select(Trip).where(Trip.id == payload.trip_id).with_for_update()
@@ -233,7 +301,7 @@ async def add_standing_passenger(payload: StandingBookingCreate):
         
         if not trip:
             raise HTTPException(status_code=404, detail="Рейс не знайдено")
-        if trip.driver_id != driver.id:
+        if current_user.role == UserRole.DRIVER and trip.driver_id != driver.id:
             raise HTTPException(status_code=403, detail="Це не ваш рейс")
 
         # 3. Перевіряємо статус рейсу
@@ -294,14 +362,12 @@ async def add_standing_passenger(payload: StandingBookingCreate):
     
 # === ДОДАВАННЯ ПОСИЛКИ (UC-D4) ===
 @router.post("/parcel")
-async def add_parcel(payload: ParcelBookingCreate):
+async def add_parcel(
+    payload: ParcelBookingCreate,
+    current_user: User = Depends(get_current_driver)
+):
     async with async_session_maker() as session:
-        # 1. Знаходимо водія
-        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        
-        if not driver:
-            raise HTTPException(status_code=403, detail="Водія не знайдено")
+        driver = current_user
 
         # 2. Перевіряємо рейс
         trip_stmt = select(Trip).where(Trip.id == payload.trip_id)
@@ -309,12 +375,20 @@ async def add_parcel(payload: ParcelBookingCreate):
         
         if not trip:
             raise HTTPException(status_code=404, detail="Рейс не знайдено")
-        if trip.driver_id != driver.id:
+        if current_user.role == UserRole.DRIVER and trip.driver_id != driver.id:
             raise HTTPException(status_code=403, detail="Це не ваш рейс")
 
         # 3. Створюємо запис посилки
         parcel_type = BookingType.PARCEL if hasattr(BookingType, 'PARCEL') else "PARCEL"
         source_val = BookingSource.DRIVER if hasattr(BookingSource, 'DRIVER') else "DRIVER"
+
+        if payload.price and payload.price > 0:
+            parcel_price = float(payload.price)
+        elif trip.price_parcel is not None:
+            parcel_price = float(trip.price_parcel)
+        else:
+            sys_cfg = await _get_system_config(session)
+            parcel_price = float(sys_cfg.price_parcel)
 
         new_booking = Booking(
             trip_id=trip.id,
@@ -326,7 +400,7 @@ async def add_parcel(payload: ParcelBookingCreate):
             source=source_val,
             status=BookingStatus.BOARDED,  # Посилка відразу вважається прийнятою
             passengers_count=1,            # 1 посилка = 1 одиниця
-            amount_paid=payload.price if (payload.price and payload.price > 0) else (getattr(trip, 'price_parcel', 100.0) or 100.0),
+            amount_paid=parcel_price,
             comment=payload.description    # Якщо в БД є поле comment. Якщо ні - просто видали цей рядок
         )
         
@@ -338,13 +412,13 @@ async def add_parcel(payload: ParcelBookingCreate):
     
 # === СКАСУВАННЯ ШВИДКОГО ПРОДАЖУ (UC-D7) ===
 @router.delete("/{booking_id}/quick-sale")
-async def cancel_quick_sale(booking_id: int, telegram_id: int):
+async def cancel_quick_sale(
+    booking_id: int,
+    current_user: User = Depends(get_current_driver),
+):
     async with async_session_maker() as session:
         # Перевіряємо водія
-        user_stmt = select(User).where(User.telegram_id == telegram_id)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        if not driver:
-            raise HTTPException(status_code=403, detail="Доступ заборонено")
+        driver = current_user
 
         # Знаходимо бронювання
         stmt = select(Booking, Trip).join(Trip, Booking.trip_id == Trip.id).where(Booking.id == booking_id)
@@ -355,7 +429,7 @@ async def cancel_quick_sale(booking_id: int, telegram_id: int):
         booking, trip = result
 
         # Перевіряємо, чи це рейс цього водія і чи це швидкий продаж
-        if trip.driver_id != driver.id:
+        if driver.role == UserRole.DRIVER and trip.driver_id != driver.id:
             raise HTTPException(status_code=403, detail="Це не ваш рейс")
             
         booking_type_str = booking.booking_type.name if hasattr(booking.booking_type, 'name') else str(booking.booking_type)
@@ -376,18 +450,18 @@ async def cancel_quick_sale(booking_id: int, telegram_id: int):
 
 # === ШВИДКИЙ ПРОДАЖ СИДЯЧОГО МІСЦЯ (ОФЛАЙН) ===
 @router.post("/seated")
-async def add_seated_passenger(payload: StandingBookingCreate):
+async def add_seated_passenger(
+    payload: StandingBookingCreate,
+    current_user: User = Depends(get_current_driver),
+):
     async with async_session_maker() as session:
         # 1. Знаходимо водія
-        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        if not driver or driver.role.name.upper() != "DRIVER":
-            raise HTTPException(status_code=403, detail="Ви не водій")
+        driver = current_user
 
         # 2. Блокуємо рейс
         trip_stmt = select(Trip).where(Trip.id == payload.trip_id).with_for_update()
         trip = (await session.execute(trip_stmt)).scalar_one_or_none()
-        if not trip or trip.driver_id != driver.id:
+        if not trip or (driver.role == UserRole.DRIVER and trip.driver_id != driver.id):
             raise HTTPException(status_code=403, detail="Це не ваш рейс")
 
         # 3. Перевіряємо статус
@@ -434,16 +508,16 @@ async def add_seated_passenger(payload: StandingBookingCreate):
 
 # === ШВИДКИЙ ПРОДАЖ СТОЯЧОГО МІСЦЯ ===
 @router.post("/standing")
-async def add_standing_passenger(payload: StandingBookingCreate):
+async def add_standing_passenger(
+    payload: StandingBookingCreate,
+    current_user: User = Depends(get_current_driver),
+):
     async with async_session_maker() as session:
-        user_stmt = select(User).where(User.telegram_id == payload.telegram_id)
-        driver = (await session.execute(user_stmt)).scalar_one_or_none()
-        if not driver or driver.role.name.upper() != "DRIVER":
-            raise HTTPException(status_code=403, detail="Ви не водій")
+        driver = current_user
 
         trip_stmt = select(Trip).where(Trip.id == payload.trip_id).with_for_update()
         trip = (await session.execute(trip_stmt)).scalar_one_or_none()
-        if not trip or trip.driver_id != driver.id:
+        if not trip or (driver.role == UserRole.DRIVER and trip.driver_id != driver.id):
             raise HTTPException(status_code=403, detail="Це не ваш рейс")
 
         current_status = trip.status.name if hasattr(trip.status, 'name') else str(trip.status)

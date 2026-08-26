@@ -37,6 +37,8 @@ async def test_trips_public_locations_and_search(db_session: AsyncSession, sampl
             assert isinstance(resp_search.json(), list)
 
 
+from app.services.auth_service import create_access_token
+
 @pytest.mark.asyncio
 async def test_driver_manifest_summary_and_schedule(db_session: AsyncSession, sample_trip: Trip):
     driver = User(
@@ -49,6 +51,8 @@ async def test_driver_manifest_summary_and_schedule(db_session: AsyncSession, sa
     vehicle = Vehicle(model="Mercedes Sprinter", plate_number="BC5544AA", total_seats=18, total_standing=4, is_active=True)
     db_session.add_all([driver, vehicle])
     await db_session.commit()
+    token = create_access_token(driver.id, driver.role)
+    headers = {"Authorization": f"Bearer {token}"}
 
     sample_trip.driver_id = driver.id
     sample_trip.vehicle_id = vehicle.id
@@ -76,7 +80,8 @@ async def test_driver_manifest_summary_and_schedule(db_session: AsyncSession, sa
 
     target_date_str = sample_trip.departure_time.strftime("%Y-%m-%d")
 
-    with patch("app.api.trips.async_session_maker", return_value=SessionContext()), \
+    with patch("app.api.deps.async_session_maker", return_value=SessionContext()), \
+         patch("app.api.trips.async_session_maker", return_value=SessionContext()), \
          patch("app.services.reminders.auto_close_expired_trips", new_callable=AsyncMock), \
          patch("app.api.trips.manager.broadcast", new_callable=AsyncMock):
 
@@ -85,19 +90,21 @@ async def test_driver_manifest_summary_and_schedule(db_session: AsyncSession, sa
             resp_man = await client.get(
                 f"/api/trips/driver/{driver.telegram_id}/manifest",
                 params={"target_date": target_date_str},
+                headers=headers,
             )
             assert resp_man.status_code == 200
             assert len(resp_man.json()) >= 1
 
-            # 403 for non-existent driver
+            # 403 for non-existent or unauthenticated driver
             resp_man_403 = await client.get("/api/trips/driver/99999999/manifest")
-            assert resp_man_403.status_code == 403
+            assert resp_man_403.status_code == 401
 
             # 2. Driver Status Update PATCH
             resp_status = await client.patch(
                 f"/api/trips/{sample_trip.id}/status",
                 params={"telegram_id": driver.telegram_id},
                 json={"status": "BOARDING"},
+                headers=headers,
             )
             assert resp_status.status_code == 200
 
@@ -108,6 +115,7 @@ async def test_driver_manifest_summary_and_schedule(db_session: AsyncSession, sa
             resp_sum = await client.get(
                 f"/api/trips/driver/{driver.telegram_id}/summary",
                 params={"target_date": target_date_str},
+                headers=headers,
             )
             assert resp_sum.status_code == 200
             assert resp_sum.json()["total_sum"] >= 0
@@ -116,6 +124,7 @@ async def test_driver_manifest_summary_and_schedule(db_session: AsyncSession, sa
             resp_pub = await client.get(
                 f"/api/trips/driver/{driver.telegram_id}/published-schedule",
                 params={"date_from": target_date_str, "date_to": target_date_str},
+                headers=headers,
             )
             assert resp_pub.status_code == 200
             assert resp_pub.json()["driver_name"] == driver.full_name
