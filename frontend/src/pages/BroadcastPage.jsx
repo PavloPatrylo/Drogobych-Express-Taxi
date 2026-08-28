@@ -19,7 +19,7 @@ export default function BroadcastPage() {
   const [activeTab, setActiveTab] = useState('schedule'); // 'schedule' або 'general'
 
   // General Broadcast State
-  const [targetGroup, setTargetGroup] = useState('all');
+  const [targetGroup, setTargetGroup] = useState('passengers');
   const [message, setMessage] = useState('');
   const [generalSentSuccess, setGeneralSentSuccess] = useState(null);
   const [generalRecipientsCount, setGeneralRecipientsCount] = useState(null);
@@ -416,9 +416,10 @@ export default function BroadcastPage() {
                 onChange={(e) => setTargetGroup(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-3 text-xs text-slate-200 outline-none"
               >
-                <option value="all">📢 Усі підписані пасажири</option>
+                <option value="passengers">📢 Усі підписані пасажири</option>
                 <option value="today_passengers">🚕 Пасажири на сьогоднішні рейси</option>
                 <option value="drivers">👮 Усі водії</option>
+                <option value="all">🌐 Усі користувачі (Пасажири + Водії)</option>
               </select>
             </div>
 

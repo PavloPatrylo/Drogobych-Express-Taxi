@@ -227,6 +227,11 @@ async def _recipient_ids(db: AsyncSession, trip_id: int | None = None, target_gr
             User.role == UserRole.DRIVER,
             User.telegram_id.isnot(None),
         )
+    elif target_group in ["passengers", "all_passengers"]:
+        stmt = select(User.telegram_id).where(
+            User.role == UserRole.PASSENGER,
+            User.telegram_id.isnot(None),
+        )
     elif target_group == "today_passengers":
         today = datetime.now(KYIV_TZ).date()
         start_dt = datetime.combine(today, time.min, tzinfo=KYIV_TZ)
@@ -236,6 +241,7 @@ async def _recipient_ids(db: AsyncSession, trip_id: int | None = None, target_gr
             .join(Booking, Booking.passenger_id == User.id)
             .join(Trip, Booking.trip_id == Trip.id)
             .where(
+                User.role == UserRole.PASSENGER,
                 User.telegram_id.isnot(None),
                 Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]),
                 Trip.departure_time >= start_dt,
@@ -247,12 +253,14 @@ async def _recipient_ids(db: AsyncSession, trip_id: int | None = None, target_gr
             select(User.telegram_id)
             .join(Booking, Booking.passenger_id == User.id)
             .where(
+                User.role == UserRole.PASSENGER,
                 User.telegram_id.isnot(None),
                 Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PAID, BookingStatus.BOARDED]),
                 Booking.trip_id == trip_id,
             )
         )
     else:
+        # "all" or any unspecified group: target all users with telegram_id
         stmt = select(User.telegram_id).where(User.telegram_id.isnot(None))
 
     result = await db.execute(stmt.distinct())
