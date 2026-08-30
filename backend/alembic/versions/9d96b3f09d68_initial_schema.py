@@ -32,7 +32,7 @@ def upgrade() -> None:
     sa.Column('telegram_id', sa.BigInteger(), nullable=True),
     sa.Column('phone', sa.String(length=20), nullable=True),
     sa.Column('full_name', sa.String(length=100), nullable=True),
-    sa.Column('role', sa.Enum('PASSENGER', 'DRIVER', 'DISPATCHER', name='userrole'), nullable=False),
+    sa.Column('role', sa.Enum('PASSENGER', 'DRIVER', 'DISPATCHER', 'ADMIN', 'passenger', 'driver', 'dispatcher', 'admin', name='userrole'), nullable=False),
     sa.Column('password', sa.String(length=255), nullable=True),
     sa.Column('avatar_url', sa.String(length=255), nullable=True),
     sa.PrimaryKeyConstraint('id')
@@ -62,6 +62,8 @@ def upgrade() -> None:
     sa.Column('standing_limit_snapshot', sa.Integer(), nullable=False),
     sa.Column('price_seated', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.Column('price_standing', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('cash_submitted', sa.Float(), nullable=True),
+    sa.Column('closed_by', sa.String(length=100), nullable=True),
     sa.ForeignKeyConstraint(['driver_id'], ['users.id'], ),
     sa.ForeignKeyConstraint(['from_location_id'], ['locations.id'], ),
     sa.ForeignKeyConstraint(['to_location_id'], ['locations.id'], ),

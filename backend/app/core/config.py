@@ -2,11 +2,12 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    DB_USER: str
-    DB_PASSWORD: str
-    DB_HOST: str
+    DB_USER: str = "taxi"
+    DB_PASSWORD: str = "local_password"
+    DB_HOST: str = "db"
     DB_PORT: int = 5432
-    DB_NAME: str
+    DB_NAME: str = "taxi_local"
+    DATABASE_URL: str | None = None
 
     BOT_TOKEN: str
     SECRET_KEY: str
@@ -23,9 +24,14 @@ class Settings(BaseSettings):
     
     @property
     def database_url(self) -> str:
-        # Формуємо URL для асинхронного підключення asyncpg
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
-    model_config = SettingsConfigDict(env_file="../.env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 settings = Settings()
