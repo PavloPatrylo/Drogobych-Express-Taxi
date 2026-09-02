@@ -96,6 +96,7 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/drogobych-taxi-frontend:${{ steps.meta.outputs.sha_tag }}
 
       - name: Deploy to Oracle Server via SSH
+        if: ${{ secrets.SSH_PRIVATE_KEY != '' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ github.ref == 'refs/heads/main' && secrets.PROD_HOST || secrets.STAGE_HOST }}
