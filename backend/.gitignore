@@ -216,3 +216,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 frontend/node_modules/
+
+.env.*
+!.env.*.example
