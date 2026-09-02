@@ -68,7 +68,9 @@ async def test_search_trips_and_detail_api(db_session: AsyncSession, sample_trip
          patch("app.services.reminders.auto_close_expired_trips", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
             # Search trips endpoint
-            travel_date_str = sample_trip.departure_time.strftime("%Y-%m-%d")
+            from zoneinfo import ZoneInfo
+            dep_aware = sample_trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if sample_trip.departure_time.tzinfo is None else sample_trip.departure_time
+            travel_date_str = dep_aware.astimezone(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
             resp_search = await client.get(
                 "/api/trips/search",
                 params={

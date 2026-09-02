@@ -78,7 +78,9 @@ async def test_driver_manifest_summary_and_schedule(db_session: AsyncSession, sa
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             pass
 
-    target_date_str = sample_trip.departure_time.strftime("%Y-%m-%d")
+    from zoneinfo import ZoneInfo
+    dep_aware = sample_trip.departure_time.replace(tzinfo=ZoneInfo("UTC")) if sample_trip.departure_time.tzinfo is None else sample_trip.departure_time
+    target_date_str = dep_aware.astimezone(ZoneInfo("Europe/Kyiv")).strftime("%Y-%m-%d")
 
     with patch("app.api.deps.async_session_maker", return_value=SessionContext()), \
          patch("app.api.trips.async_session_maker", return_value=SessionContext()), \

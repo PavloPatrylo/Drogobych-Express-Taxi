@@ -156,8 +156,10 @@ async def sample_trip(db_session: AsyncSession, admin_user: User):
     await db_session.commit()
     
     from datetime import timedelta
-    now_utc = datetime.now(timezone.utc)
-    departure_dt = now_utc + timedelta(days=1)
+    from zoneinfo import ZoneInfo
+    KYIV_TZ = ZoneInfo("Europe/Kyiv")
+    now_kyiv = datetime.now(KYIV_TZ)
+    departure_dt = now_kyiv + timedelta(days=1)
     arrival_dt = departure_dt + timedelta(hours=1, minutes=30)
     
     trip = Trip(

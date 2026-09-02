@@ -85,7 +85,7 @@ async def test_close_trip_permissions_and_statuses(db_session, admin_user, drive
 @pytest.mark.asyncio
 async def test_drivers_cash_reconciliation_use_case_deep(db_session, admin_user, driver_user, vehicle, locations, passenger_user):
     from_loc, to_loc = locations
-    today_str = date.today().isoformat()
+    today_str = datetime.now(KYIV_TZ).date().isoformat()
 
     # Create completed trip for driver with CASH and CARD bookings
     trip = Trip(
