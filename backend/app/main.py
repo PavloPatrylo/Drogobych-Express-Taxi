@@ -74,11 +74,11 @@ async def serve_index():
     """
     Головна сторінка клієнтського Mini App.
     """
-    return FileResponse("index.html")
+    return FileResponse("index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/app.js")
 async def serve_app_js():
     """
     JS скрипт для клієнтського Mini App.
     """
-    return FileResponse("app.js")
+    return FileResponse("app.js", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})

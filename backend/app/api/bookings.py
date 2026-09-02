@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 from app.api.deps import get_current_user, get_current_driver
 from app.db.database import async_session_maker
-from app.db.models import Trip, Booking, User, UserRole, BookingType, BookingSource, BookingStatus, Location, PaymentMethod
+from app.db.models import Trip, Booking, User, UserRole, BookingType, BookingSource, BookingStatus, Location, PaymentMethod, Vehicle
 from app.schemas.booking import BookingCreate, BookingRead, BookingStatusUpdate, StandingBookingCreate, ParcelBookingCreate
 from app.services.admin_use_cases import refresh_user_stats, promote_waitlist_bookings_use_case, _get_system_config
 from app.websocket_manager import manager
@@ -151,10 +151,11 @@ async def get_my_bookings(current_user: User = Depends(get_current_user)):
         ToLoc = aliased(Location)
 
         stmt = (
-            select(Booking, Trip, FromLoc, ToLoc)
+            select(Booking, Trip, FromLoc, ToLoc, Vehicle)
             .join(Trip, Booking.trip_id == Trip.id)
             .join(FromLoc, Trip.from_location_id == FromLoc.id)
             .join(ToLoc, Trip.to_location_id == ToLoc.id)
+            .outerjoin(Vehicle, Trip.vehicle_id == Vehicle.id)
             .where(Booking.passenger_id == current_user.id)
             .order_by(Booking.created_at.desc())
         )
@@ -163,7 +164,7 @@ async def get_my_bookings(current_user: User = Depends(get_current_user)):
         rows = result.all()
 
         response = []
-        for booking, trip, from_loc, to_loc in rows:
+        for booking, trip, from_loc, to_loc, vehicle in rows:
             pos = None
             if booking.status == BookingStatus.WAITLIST:
                 pos_stmt = (
@@ -174,15 +175,20 @@ async def get_my_bookings(current_user: User = Depends(get_current_user)):
                 )
                 pos = (await session.execute(pos_stmt)).scalar() or 1
 
+            b_type = booking.booking_type.value if hasattr(booking.booking_type, "value") else str(booking.booking_type)
+
             response.append(BookingRead(
                 id=booking.id,
-                status=booking.status.value,
+                status=booking.status.value if hasattr(booking.status, "value") else str(booking.status),
                 passengers_count=booking.passengers_count,
                 amount_paid=float(booking.amount_paid),
                 payment_method=booking.payment_method.value if hasattr(booking.payment_method, "value") else str(booking.payment_method),
+                booking_type=b_type,
                 trip_departure_time=trip.departure_time,
                 from_location=from_loc.name,
                 to_location=to_loc.name,
+                vehicle_name=vehicle.model if vehicle else None,
+                vehicle_license_plate=vehicle.plate_number if vehicle else None,
                 waitlist_position=pos,
             ))
             

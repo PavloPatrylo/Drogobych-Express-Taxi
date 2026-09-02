@@ -112,16 +112,53 @@ async def create_staff_member(
 
     # Check if user already exists by phone
     dup = await db.execute(select(User).where(User.phone == payload.phone))
-    if dup.scalars().first():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Користувач з таким номером телефону вже існує")
+    existing = dup.scalars().first()
+    if existing:
+        if existing.role == UserRole.PASSENGER:
+            # Користувач був Пасажиром. Промотуємо його до вибраної посади!
+            existing.role = payload.role
+            if payload.full_name and payload.full_name.strip():
+                existing.full_name = payload.full_name.strip()
+            if payload.password and payload.password.strip():
+                existing.password = hash_password(payload.password.strip())
+            existing.is_active = True
+            if payload.role == UserRole.DRIVER:
+                existing.is_driver_activated = False
+                if existing.telegram_id:
+                    try:
+                        from bot.main_bot import bot
+                        await bot.send_message(
+                            chat_id=existing.telegram_id,
+                            text=(
+                                "🚕 **ВІТАЄМО В КОМАНДІ DROGOBYCH EXPRESS TAXI!**\n\n"
+                                "Адміністратор призначив вас Водієм.\n\n"
+                                "🔒 Для активації водійського режиму відкрийте **Mini App** та введіть пароль, наданий адміністратором."
+                            ),
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        print(f"[BOT NOTIFY ERROR] Could not notify driver: {e}")
+            else:
+                existing.is_driver_activated = True
+
+            await db.commit()
+            await db.refresh(existing)
+            return existing
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Співробітник з таким номером телефону вже існує у штаті"
+            )
 
     hashed = hash_password(payload.password.strip()) if payload.password and payload.password.strip() else None
+    is_driver_act = False if payload.role == UserRole.DRIVER else True
     new_user = User(
         full_name=payload.full_name,
         phone=payload.phone,
         role=payload.role,
         password=hashed,
-        is_active=True
+        is_active=True,
+        is_driver_activated=is_driver_act
     )
     db.add(new_user)
     await db.commit()
@@ -208,6 +245,25 @@ async def unblock_staff_member(
     existing.is_active = True
     await db.commit()
     return {"message": "Співробітника розблоковано", "is_active": True}
+
+
+@router.post("/staff/{user_id}/demote-to-passenger")
+async def demote_staff_to_passenger(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    """
+    Переводить водія чи диспетчера у статус звичайного Пасажира (PASSENGER).
+    Працює виключно для Головного Адміністратора (ADMIN).
+    """
+    existing = await db.get(User, user_id)
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
+    ensure_staff_management_permission(current_user, existing.role)
+    existing.role = UserRole.PASSENGER
+    await db.commit()
+    return {"message": "Співробітника успішно переведено у статус Пасажира", "role": "passenger", "user_id": user_id}
 
 
 @router.delete("/staff/{user_id}")

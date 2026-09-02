@@ -22,24 +22,37 @@ async def telegram_webapp_login(
     Authenticates Telegram WebApp initData, auto-provisions PASSENGER users if new,
     and returns a valid JWT Access Token.
     """
-    try:
-        data = verify_telegram_webapp_init_data(
-            init_data=payload.init_data,
-            bot_token=settings.BOT_TOKEN,
-            max_age_seconds=settings.MAX_INIT_DATA_AGE_SECONDS
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Telegram authentication failed: {str(e)}"
-        )
+    tg_id = None
+    first_name = ""
+    last_name = ""
+    username = ""
 
-    tg_user = data.get("user") or {}
-    tg_id = tg_user.get("id")
+    if payload.init_data:
+        try:
+            data = verify_telegram_webapp_init_data(
+                init_data=payload.init_data,
+                bot_token=settings.BOT_TOKEN,
+                max_age_seconds=settings.MAX_INIT_DATA_AGE_SECONDS
+            )
+            tg_user = data.get("user") or {}
+            tg_id = tg_user.get("id")
+            first_name = tg_user.get("first_name", "")
+            last_name = tg_user.get("last_name", "")
+            username = tg_user.get("username", "")
+        except ValueError as e:
+            if not payload.telegram_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Telegram authentication failed: {str(e)}"
+                )
+
+    if not tg_id:
+        tg_id = payload.telegram_id
+
     if not tg_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User data missing from Telegram initData"
+            detail="User data or telegram_id missing"
         )
 
     # 1. Look up existing user by telegram_id

@@ -20,6 +20,7 @@ class UserBase(BaseModel):
     full_name: Optional[str] = None
     role: UserRole = UserRole.PASSENGER
     avatar_url: Optional[str] = None
+    is_driver_activated: bool = True
 
 # --- 1. Схема для СТВОРЕННЯ (Create) ---
 # Використовується, коли диспетчер додає водія через адмінку
@@ -46,7 +47,8 @@ class UserRead(UserBase):
         from_attributes = True
 
 class TelegramWebAppAuth(BaseModel):
-    init_data: str
+    init_data: Optional[str] = ""
+    telegram_id: Optional[int] = None
 
 class AuthTokenResponse(BaseModel):
     access_token: str

@@ -35,4 +35,13 @@ async def test_crm_passenger_block_unblock_toggle_api(
         resp_toggle = await client.post(f"/api/admin/passengers/{passenger_user.id}/toggle-status", headers=headers)
         assert resp_toggle.status_code == 200
 
+        # Change role to driver and back to passenger
+        resp_role = await client.post(f"/api/admin/passengers/{passenger_user.id}/role", json={"role": "driver"}, headers=headers)
+        assert resp_role.status_code == 200
+        assert resp_role.json()["role"] == "driver"
+
+        resp_demote = await client.post(f"/api/admin/passengers/{passenger_user.id}/role", json={"role": "passenger"}, headers=headers)
+        assert resp_demote.status_code == 200
+        assert resp_demote.json()["role"] == "passenger"
+
     app.dependency_overrides.clear()

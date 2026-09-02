@@ -214,8 +214,44 @@ async def unauth_message_handler(message: types.Message, state: FSMContext):
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
-        if user and user.phone:
-            await message.answer("Оберіть потрібну дію в меню нижче:", reply_markup=get_main_menu_kb(message.from_user.id))
+        if user:
+            # Перевіряємо статус активації водія
+            if user.role == UserRole.DRIVER and getattr(user, "is_driver_activated", True) is False:
+                if message.text and user.password and verify_password(message.text.strip(), user.password):
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    user.is_driver_activated = True
+                    await session.commit()
+                    await message.answer(
+                        "🎉 **Водійський режим успішно активовано!**\n\n"
+                        "🔒 Пароль видалено з історії чату для вашої безпеки.\n"
+                        "Натисніть кнопку нижче для відкриття водійського додатка:",
+                        reply_markup=get_main_menu_kb(message.from_user.id)
+                    )
+                    return
+                else:
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    await message.answer("❌ Невірний пароль активації. Уточніть пароль у адміністратора.")
+                    return
+
+            if user.phone:
+                await message.answer("Оберіть потрібну дію в меню нижче:", reply_markup=get_main_menu_kb(message.from_user.id))
+            else:
+                if message.contact or (message.text and re.search(r'\d{7,}', message.text)):
+                    await process_phone(message, state)
+                    return
+
+                await state.set_state(AuthStates.waiting_for_phone)
+                await message.answer(
+                    "⚠️ **Для користування сервісом Express Taxi необхідно завершити реєстрацію!**\n\n"
+                    "Будь ласка, натисніть кнопку «📱 Поділитися номером» внизу або введіть ваш номер телефону:",
+                    reply_markup=get_registration_kb()
+                )
         else:
             if message.contact or (message.text and re.search(r'\d{7,}', message.text)):
                 await process_phone(message, state)

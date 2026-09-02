@@ -1,18 +1,19 @@
 # backend/app/services/auth_service.py
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
 from sqlalchemy.future import select
 from datetime import datetime, timedelta
+from typing import Union
 from jose import jwt
 
 from app.db.models import User, UserRole
 from app.core.config import settings
-from app.core.security import verify_password  # <-- Імпортуємо наш надійний верифікатор
+from app.core.security import verify_password
 
-def create_access_token(user_id: int, role: UserRole):
+def create_access_token(user_id: int, role: Union[UserRole, str]):
     expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    data = {"sub": str(user_id), "role": role.value, "exp": expire}
+    role_str = role.value if hasattr(role, "value") else str(role)
+    data = {"sub": str(user_id), "role": role_str, "exp": expire}
     return jwt.encode(data, settings.SECRET_KEY, algorithm="HS256")
 
 async def authenticate_user(db: Session, phone: str, password: str):
@@ -20,9 +21,8 @@ async def authenticate_user(db: Session, phone: str, password: str):
     result = await db.execute(select(User).filter(User.phone == phone))
     user = result.scalars().first()
     
-    # 2. Верифікація пароля через наш core.security (bcrypt)
-    # Якщо користувача немає або пароль невірний, викидаємо 401
-    if not user or not verify_password(password, user.password):
+    # 2. Перевірка наявності пароля та верифікація через bcrypt (запобігає 500 помилці)
+    if not user or not user.password or not verify_password(password, user.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="Невірні облікові дані"
@@ -35,8 +35,9 @@ async def authenticate_user(db: Session, phone: str, password: str):
             detail="Акаунт заблоковано"
         )
         
-    # 4. Перевірка доступу до адмін-панелі
-    if user.role not in [UserRole.ADMIN, UserRole.DISPATCHER]:
+    # 4. Перевірка доступу до адмін-панелі та кабінету працівника
+    role_str = (user.role.value if hasattr(user.role, "value") else str(user.role)).upper()
+    if role_str not in ["ADMIN", "DISPATCHER", "DRIVER"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="Доступ заборонено"
@@ -45,8 +46,14 @@ async def authenticate_user(db: Session, phone: str, password: str):
     return user
 
 async def get_staff_list(db: Session):
-    """Повертає список водіїв та диспетчерів."""
+    """Повертає список водіїв, диспетчерів та адміністраторів."""
     result = await db.execute(
-        select(User).filter(User.role.in_([UserRole.DRIVER, UserRole.DISPATCHER, UserRole.ADMIN]))
+        select(User).filter(
+            User.role.in_([
+                UserRole.DRIVER, UserRole.DISPATCHER, UserRole.ADMIN,
+                "driver", "dispatcher", "admin",
+                "DRIVER", "DISPATCHER", "ADMIN"
+            ])
+        )
     )
     return result.scalars().all()

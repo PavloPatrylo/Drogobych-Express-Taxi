@@ -16,6 +16,7 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     if not token:
+        print("[AUTH DEBUG] ❌ No Bearer token provided in request header!")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -25,11 +26,13 @@ async def get_current_user(
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
         user_id = payload.get("sub")
         if user_id is None:
+            print("[AUTH DEBUG] ❌ Token payload missing 'sub'")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token payload",
             )
-    except JWTError:
+    except JWTError as e:
+        print(f"[AUTH DEBUG] ❌ JWTError decoding token: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token signature or expired",
@@ -38,9 +41,13 @@ async def get_current_user(
     result = await db.execute(select(User).where(User.id == int(user_id)))
     user = result.scalars().first()
     if not user:
+        print(f"[AUTH DEBUG] ❌ User with id={user_id} not found in DB!")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if not user.is_active:
+        print(f"[AUTH DEBUG] ❌ User with id={user_id} is inactive/blocked!")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is blocked")
+    
+    print(f"[AUTH DEBUG] ✅ Successfully authenticated user id={user.id}, name={user.full_name}")
     return user
 
 

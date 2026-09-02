@@ -46,6 +46,16 @@ export default function CrmPage() {
     fetchPassengers();
   }, []);
 
+  const handleRoleChange = async (user, newRole) => {
+    if (newRole === user.role) return;
+    try {
+      await api.post(`/passengers/${user.id}/role`, { role: newRole });
+      fetchPassengers();
+    } catch (err) {
+      alert(`Помилка зміни ролі: ${err.message}`);
+    }
+  };
+
   const handleToggleBlock = async (user) => {
     try {
       const endpoint = user.is_active ? `/passengers/${user.id}/block` : `/passengers/${user.id}/unblock`;

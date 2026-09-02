@@ -19,7 +19,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8000"
     ]
-    MAX_INIT_DATA_AGE_SECONDS: int = 300
+    MAX_INIT_DATA_AGE_SECONDS: int = 86400
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
     
     @property
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     model_config = SettingsConfigDict(
-        env_file=(".env", "../.env"),
+        env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )

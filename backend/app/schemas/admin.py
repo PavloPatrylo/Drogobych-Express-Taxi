@@ -35,6 +35,7 @@ class UserResponse(BaseModel):
     telegram_id: Optional[int] = None
     role: UserRole
     is_active: bool = True
+    is_driver_activated: bool = True
     
     model_config = ConfigDict(from_attributes=True)
 

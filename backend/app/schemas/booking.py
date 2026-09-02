@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 class BookingCreate(BaseModel):
     trip_id: int
@@ -15,15 +15,16 @@ class BookingRead(BaseModel):
     passengers_count: int
     amount_paid: float
     payment_method: str = "CASH"
+    booking_type: str = "SEATED"
     trip_departure_time: datetime
     from_location: str
     to_location: str
+    vehicle_name: Optional[str] = None
+    vehicle_license_plate: Optional[str] = None
     waitlist_position: Optional[int] = None
 
     class Config:
         from_attributes = True
-
-from typing import List
 
 # === СХЕМИ ДЛЯ ВОДІЯ (UC-D1) ===
 class PassengerInfo(BaseModel):
@@ -34,7 +35,7 @@ class PassengerInfo(BaseModel):
     status: str
     amount_paid: float
     payment_method: str = "CASH"
-    booking_type: str  # ДОДАНО: SEATED, STANDING або PARCEL
+    booking_type: str  # SEATED, STANDING або PARCEL
 
 class TripManifest(BaseModel):
     trip_id: int
@@ -42,19 +43,17 @@ class TripManifest(BaseModel):
     from_location: str
     to_location: str
     available_seats: int
-    trip_status: str   # ДОДАНО: SCHEDULED, BOARDING, ACTIVE
+    trip_status: str   # SCHEDULED, BOARDING, ACTIVE
     passengers: List[PassengerInfo]
 
 class TripStatusUpdate(BaseModel):
     status: str
 
-# Якщо цієї схеми ще немає у файлі, додай її:
 class BookingStatusUpdate(BaseModel):
     status: str
 
 class StandingBookingCreate(BaseModel):
     trip_id: int
-
 
 class ParcelBookingCreate(BaseModel):
     trip_id: int

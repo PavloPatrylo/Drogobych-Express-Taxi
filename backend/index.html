@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Express Taxi Mini App</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -41,13 +44,20 @@
 
     <!-- Екран пошуку рейсів -->
     <div id="view-search" class="p-4 space-y-4 block">
-        <div class="bg-white p-4 rounded-2xl shadow-sm space-y-3 border border-gray-100">
+        <div class="bg-white p-4 rounded-2xl shadow-sm space-y-3 border border-gray-100 relative">
             <div>
                 <label class="block text-xs font-bold text-gray-500 mb-1">Звідки:</label>
                 <select id="from-select" class="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 font-medium outline-none focus:border-yellow-400">
                     <option value="">Завантаження міст...</option>
                 </select>
             </div>
+            
+            <div class="flex justify-center -my-2 relative z-10">
+                <button id="swap-locations-btn" type="button" title="Поміняти напрямок" class="bg-yellow-400 hover:bg-yellow-500 text-black px-3 py-1 rounded-full text-xs font-extrabold shadow-sm border-2 border-white transition-transform active:scale-90 flex items-center gap-1">
+                    🔄 Поміняти напрямок
+                </button>
+            </div>
+
             <div>
                 <label class="block text-xs font-bold text-gray-500 mb-1">Куди:</label>
                 <select id="to-select" class="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 font-medium outline-none focus:border-yellow-400">
@@ -189,6 +199,24 @@
         </div>
     </div>
     
+    <!-- Модальне вікно активації водія -->
+    <div id="driver-activation-modal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-6 text-center hidden">
+        <div class="bg-slate-900 border border-yellow-500/30 rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <div class="w-14 h-14 bg-yellow-500/10 border border-yellow-500/20 rounded-2xl flex items-center justify-center text-yellow-400 text-3xl font-bold mx-auto">
+                🔒
+            </div>
+            <h2 class="text-lg font-black text-slate-100 uppercase tracking-wide">Активація водійського акаунта</h2>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Введіть пароль, наданий адміністратором:
+            </p>
+            <input type="password" id="driver-activation-input" placeholder="• • • • • • • •" class="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-xl p-3.5 text-center text-slate-100 font-mono outline-none text-base">
+            <div id="driver-activation-error" class="text-xs font-bold text-red-400 hidden"></div>
+            <button id="driver-activation-btn" class="w-full bg-gradient-to-r from-yellow-400 to-amber-500 hover:from-yellow-300 hover:to-amber-400 text-slate-950 font-bold py-3.5 rounded-xl uppercase text-xs tracking-wider shadow-lg shadow-yellow-500/10 cursor-pointer">
+                АКТИВУВАТИ
+            </button>
+        </div>
+    </div>
+
     <!-- Екран блокування для незареєстрованого користувача -->
     <div id="unregistered-lock-screen" class="fixed inset-0 bg-yellow-400 z-50 flex flex-col items-center justify-center p-6 text-center space-y-4 hidden">
         <div class="w-20 h-20 bg-black/10 rounded-full flex items-center justify-center text-4xl shadow-inner mb-2">📱</div>
@@ -202,6 +230,6 @@
     </div>
 
     <!-- Твій JavaScript -->
-    <script src="app.js?v=84"></script>
+    <script src="app.js?v=1004"></script>
 </body>
 </html>

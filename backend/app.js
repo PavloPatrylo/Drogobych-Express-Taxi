@@ -31,36 +31,52 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function authFetch(url, options = {}) {
         options.headers = options.headers || {};
+        if (!authToken && tg && tg.initData) {
+            await initAuth();
+        }
         if (authToken) {
             options.headers['Authorization'] = `Bearer ${authToken}`;
         }
         options.headers['ngrok-skip-browser-warning'] = 'true';
-        return fetch(url, options);
+        let res = await fetch(url, options);
+        if (res.status === 401 && tg && tg.initData) {
+            await initAuth();
+            if (authToken) {
+                options.headers['Authorization'] = `Bearer ${authToken}`;
+                res = await fetch(url, options);
+            }
+        }
+        return res;
     }
 
     async function initAuth() {
-        if (tg && tg.initData) {
-            try {
-                const res = await fetch(`${API_URL}/auth/telegram-webapp`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'ngrok-skip-browser-warning': 'true'
-                    },
-                    body: JSON.stringify({ init_data: tg.initData })
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    authToken = data.access_token;
-                    sessionStorage.setItem('express_taxi_token', authToken);
-                    if (data.user && data.user.telegram_id) {
-                        telegramId = data.user.telegram_id;
-                    }
-                    initWebSocket();
+        try {
+            const payload = {
+                init_data: (tg && tg.initData) ? tg.initData : '',
+                telegram_id: telegramId
+            };
+            const res = await fetch(`${API_URL}/auth/telegram-webapp`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'ngrok-skip-browser-warning': 'true'
+                },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                const data = await res.json();
+                authToken = data.access_token;
+                sessionStorage.setItem('express_taxi_token', authToken);
+                if (data.user && data.user.telegram_id) {
+                    telegramId = data.user.telegram_id;
                 }
-            } catch (e) {
-                console.error("Telegram WebApp auth error:", e);
+                initWebSocket();
+            } else {
+                const errData = await res.json().catch(() => ({}));
+                console.error("Telegram WebApp auth server error:", res.status, errData);
             }
+        } catch (e) {
+            console.error("Telegram WebApp auth error:", e);
         }
     }
 
@@ -90,10 +106,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     const passengerNav = document.getElementById('passenger-nav');
     const viewDriver = document.getElementById('view-driver');
 
-    // Налаштовуємо дати (за замовчуванням - Сьогодні)
+    // Налаштовуємо дати (автоматичне збереження майбутньої дати та скидання минулої)
     const todayStr = getKyivDateStr(0);
-    dateInput.value = todayStr;
     dateInput.min = todayStr;
+
+    const savedTravelDate = localStorage.getItem('express_taxi_travel_date');
+    if (savedTravelDate && savedTravelDate >= todayStr) {
+        dateInput.value = savedTravelDate;
+    } else {
+        dateInput.value = todayStr;
+        localStorage.setItem('express_taxi_travel_date', todayStr);
+    }
+
+    dateInput.addEventListener('change', () => {
+        if (dateInput.value && dateInput.value >= todayStr) {
+            localStorage.setItem('express_taxi_travel_date', dateInput.value);
+        } else {
+            dateInput.value = todayStr;
+            localStorage.setItem('express_taxi_travel_date', todayStr);
+        }
+    });
 
     const summaryDatePicker = document.getElementById('summary-date-picker');
     if (summaryDatePicker) {
@@ -259,6 +291,46 @@ document.addEventListener('DOMContentLoaded', async () => {
                 roleEl.className = 'text-yellow-800 text-sm font-bold';
                 tripsEl.innerHTML = `<span class="text-yellow-800 font-bold">📅 Графік опубліковано у вкладці «Графік»</span>`;
 
+                // Перевіряємо статус активації водія
+                if (userData.is_driver_activated === false) {
+                    const activationModal = document.getElementById('driver-activation-modal');
+                    const activationInput = document.getElementById('driver-activation-input');
+                    const activationBtn = document.getElementById('driver-activation-btn');
+                    const activationErr = document.getElementById('driver-activation-error');
+
+                    if (activationModal) activationModal.classList.remove('hidden');
+
+                    if (activationBtn) {
+                        activationBtn.onclick = async () => {
+                            const pwd = activationInput ? activationInput.value : '';
+                            if (!pwd.trim()) return;
+
+                            if (activationErr) activationErr.classList.add('hidden');
+                            try {
+                                const response = await authFetch(`${API_URL}/users/activate-driver`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ password: pwd.trim() })
+                                });
+                                const data = await response.json();
+                                if (response.ok) {
+                                    if (activationInput) activationInput.value = '';
+                                    if (activationModal) activationModal.classList.add('hidden');
+                                    userData.is_driver_activated = true;
+                                    alert("🎉 Водійський режим успішно активовано!");
+                                } else {
+                                    if (activationErr) {
+                                        activationErr.textContent = data.detail || "Невірний пароль активації";
+                                        activationErr.classList.remove('hidden');
+                                    }
+                                }
+                            } catch (err) {
+                                console.error('Activation error:', err);
+                            }
+                        };
+                    }
+                }
+
                 // Ховаємо пасажирський інтерфейс
                 if (passengerNav) passengerNav.classList.add('hidden');
                 if (viewSearch) viewSearch.classList.add('hidden');
@@ -284,6 +356,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    function saveLocationState() {
+        if (fromSelect && toSelect && fromSelect.value && toSelect.value) {
+            localStorage.setItem('express_taxi_from_id', fromSelect.value);
+            localStorage.setItem('express_taxi_to_id', toSelect.value);
+        }
+    }
+
     // 2. Міста (тільки для пасажира)
     async function fetchLocations() {
         try {
@@ -292,11 +371,78 @@ document.addEventListener('DOMContentLoaded', async () => {
             let optionsHtml = locations.map(loc => `<option value="${loc.id}">${loc.name}</option>`).join('');
             fromSelect.innerHTML = optionsHtml;
             toSelect.innerHTML = optionsHtml;
-            if (locations.length >= 2) { 
+
+            const savedFromId = localStorage.getItem('express_taxi_from_id');
+            const savedToId = localStorage.getItem('express_taxi_to_id');
+            
+            const hasFromOption = savedFromId && Array.from(fromSelect.options).some(opt => opt.value === savedFromId);
+            const hasToOption = savedToId && Array.from(toSelect.options).some(opt => opt.value === savedToId);
+
+            if (hasFromOption && hasToOption && savedFromId !== savedToId) {
+                fromSelect.value = savedFromId;
+                toSelect.value = savedToId;
+            } else if (locations.length >= 2) { 
                 fromSelect.value = locations[0].id; // Дрогобич
                 toSelect.value = locations[1].id;   // Львів
             }
         } catch (error) { console.error(error); }
+    }
+
+    // Автоматичне перемикання "Звідки" <-> "Куди" (Львів <-> Дрогобич)
+    fromSelect.addEventListener('change', () => {
+        const selectedFromText = fromSelect.options[fromSelect.selectedIndex]?.text?.toLowerCase() || '';
+        let targetMatch = null;
+
+        if (selectedFromText.includes('львів') || selectedFromText.includes('lviv')) {
+            targetMatch = Array.from(toSelect.options).find(opt => 
+                opt.text.toLowerCase().includes('дрогобич') || opt.text.toLowerCase().includes('drohobych')
+            );
+        } else if (selectedFromText.includes('дрогобич') || selectedFromText.includes('drohobych')) {
+            targetMatch = Array.from(toSelect.options).find(opt => 
+                opt.text.toLowerCase().includes('львів') || opt.text.toLowerCase().includes('lviv')
+            );
+        }
+
+        if (targetMatch) {
+            toSelect.value = targetMatch.value;
+        } else if (fromSelect.value === toSelect.value) {
+            const fallbackOpt = Array.from(toSelect.options).find(opt => opt.value !== fromSelect.value);
+            if (fallbackOpt) toSelect.value = fallbackOpt.value;
+        }
+        saveLocationState();
+    });
+
+    toSelect.addEventListener('change', () => {
+        const selectedToText = toSelect.options[toSelect.selectedIndex]?.text?.toLowerCase() || '';
+        let targetMatch = null;
+
+        if (selectedToText.includes('львів') || selectedToText.includes('lviv')) {
+            targetMatch = Array.from(fromSelect.options).find(opt => 
+                opt.text.toLowerCase().includes('дрогобич') || opt.text.toLowerCase().includes('drohobych')
+            );
+        } else if (selectedToText.includes('дрогобич') || selectedToText.includes('drohobych')) {
+            targetMatch = Array.from(fromSelect.options).find(opt => 
+                opt.text.toLowerCase().includes('львів') || opt.text.toLowerCase().includes('lviv')
+            );
+        }
+
+        if (targetMatch) {
+            fromSelect.value = targetMatch.value;
+        } else if (toSelect.value === fromSelect.value) {
+            const fallbackOpt = Array.from(fromSelect.options).find(opt => opt.value !== toSelect.value);
+            if (fallbackOpt) fromSelect.value = fallbackOpt.value;
+        }
+        saveLocationState();
+    });
+
+    const swapBtn = document.getElementById('swap-locations-btn');
+    if (swapBtn) {
+        swapBtn.addEventListener('click', () => {
+            const tempVal = fromSelect.value;
+            fromSelect.value = toSelect.value;
+            toSelect.value = tempVal;
+            saveLocationState();
+        });
     }
 
     // 3. Пошук рейсів (пасажир)
@@ -428,9 +574,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             confirmBookingBtn.disabled = true;
 
             try {
-                const response = await fetch(`${API_URL}/bookings/`, {
+                const response = await authFetch(`${API_URL}/bookings/`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
                         trip_id: currentTripId, 
                         telegram_id: telegramId, 
@@ -465,7 +611,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         historyContainer.innerHTML = '';
 
         try {
-            const response = await fetch(`${API_URL}/bookings/my/${telegramId}`, { headers: { 'ngrok-skip-browser-warning': 'true' }});
+            const response = await authFetch(`${API_URL}/bookings/my/${telegramId}`);
             if (!response.ok) throw new Error('Помилка завантаження');
             const tickets = await response.json();
 
@@ -499,14 +645,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                     statusBadge = `<span class="bg-green-100 text-green-800 text-[10px] px-2 py-1 rounded-full font-bold">ЗАВЕРШЕНО</span>`;
                 }
 
+                const vehicleText = ticket.vehicle_name 
+                    ? `🚌 ${ticket.vehicle_name}${ticket.vehicle_license_plate ? ` (${ticket.vehicle_license_plate})` : ''}` 
+                    : '🚌 Автомобіль уточнюється';
+
+                const typeLabel = ticket.booking_type === 'STANDING' 
+                    ? '🧍 Стояче місце' 
+                    : (ticket.booking_type === 'PARCEL' ? '📦 Посилка' : '💺 Сидяче місце');
+
                 const cardHtml = `
                     <div class="bg-white p-4 rounded-2xl shadow-sm border border-gray-200">
                         <div class="flex justify-between items-start mb-2">
-                            <span class="text-sm font-bold text-gray-500">${dateStr} о ${timeStr}</span>
+                            <span class="text-sm font-bold text-gray-500">📅 ${dateStr} о ${timeStr}</span>
                             ${statusBadge}
                         </div>
                         <p class="font-bold text-lg">${ticket.from_location} → ${ticket.to_location}</p>
-                        <p class="text-xs text-gray-500 mt-1">Місць: ${ticket.passengers_count} • Оплата: ${ticket.amount_paid} грн</p>
+                        <div class="mt-1">
+                            <span class="text-xs font-semibold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200/60 inline-block">${vehicleText}</span>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-2.5">${typeLabel} • ${ticket.passengers_count} місц. • ${ticket.amount_paid} грн (${ticket.payment_method === 'CARD' ? 'Картка' : 'Готівка'})</p>
                         ${isActive ? actionBtn : ''}
                     </div>`;
 
@@ -528,8 +685,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!confirm('Ви дійсно хочете скасувати цей квиток?')) return;
         
         try {
-            const response = await fetch(`${API_URL}/bookings/${bookingId}/cancel?telegram_id=${telegramId}`, {
-                method: 'PATCH', headers: { 'ngrok-skip-browser-warning': 'true' }
+            const response = await authFetch(`${API_URL}/bookings/${bookingId}/cancel?telegram_id=${telegramId}`, {
+                method: 'PATCH'
             });
 
             if (response.ok) {
@@ -1141,11 +1298,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // === ДОДАВАННЯ СИДЯЧОГО ПАСАЖИРА ===
     window.addSeatedPassenger = async function(tripId) {
         try {
-            const response = await fetch(`${API_URL}/bookings/seated`, {
+            const response = await authFetch(`${API_URL}/bookings/seated`, {
                 method: 'POST',
                 headers: { 
-                    'Content-Type': 'application/json',
-                    'ngrok-skip-browser-warning': 'true' 
+                    'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({ trip_id: tripId, telegram_id: telegramId })
             });
@@ -1166,9 +1322,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.undoBoarding = async function(bookingId) {
         // ❌ Рядок із confirm видалено
         try {
-            const response = await fetch(`${API_URL}/bookings/${bookingId}/status`, {
+            const response = await authFetch(`${API_URL}/bookings/${bookingId}/status`, {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'RESERVED' })
             });
             if (response.ok) fetchDriverManifest();

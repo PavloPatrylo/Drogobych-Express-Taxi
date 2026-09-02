@@ -69,6 +69,7 @@ class User(Base):
     
     # <--- ДОДАНО ДЛЯ БЛОКУВАННЯ В CRM
     is_active: Mapped[bool] = mapped_column(Boolean, default=True) 
+    is_driver_activated: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true") 
 
     stats: Mapped["UserStats"] = relationship(back_populates="user", cascade="all, delete-orphan")
 
@@ -200,6 +201,7 @@ class Booking(Base):
     passengers_count: Mapped[int] = mapped_column(Integer, default=1)
     amount_paid: Mapped[float] = mapped_column(Numeric(10, 2))
     comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_reminder_sent: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     trip: Mapped["Trip"] = relationship("Trip", back_populates="bookings")
     passenger: Mapped[Optional["User"]] = relationship("User", foreign_keys=[passenger_id])

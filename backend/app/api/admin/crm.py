@@ -1,13 +1,18 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 
 from app.api.deps import check_admin_access
 from app.db.database import get_db
-from app.db.models import User
+from app.db.models import User, UserRole
 from app.schemas.admin import AdminUserResponse
 from app.services import admin_use_cases
 
 router = APIRouter(tags=["Admin CRM"])
+
+
+class ChangeRolePayload(BaseModel):
+    role: UserRole
 
 
 @router.get("/passengers", response_model=list[AdminUserResponse])
@@ -43,3 +48,14 @@ async def unblock_passenger(
     current_user: User = Depends(check_admin_access),
 ):
     return await admin_use_cases.toggle_passenger(db, user_id, is_active=True, actor=current_user)
+
+
+@router.post("/passengers/{user_id}/role", response_model=AdminUserResponse)
+@router.put("/users/{user_id}/role", response_model=AdminUserResponse)
+async def change_user_role_route(
+    user_id: int,
+    payload: ChangeRolePayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(check_admin_access),
+):
+    return await admin_use_cases.change_user_role(db, user_id, payload.role, actor=current_user)

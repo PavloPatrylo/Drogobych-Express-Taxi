@@ -33,11 +33,11 @@ async def test_staff_management_crud_api(db_session: AsyncSession, admin_user: U
         assert resp_create.status_code == 200
         staff_id = resp_create.json()["id"]
 
-        # 2. Duplicate phone error -> 400
+        # 2. Duplicate staff phone error -> 400
         resp_dup = await client.post(
             "/api/admin/auth/staff",
             json={
-                "full_name": "New Staff Driver 2",
+                "full_name": "Updated Driver 2",
                 "phone": "+380971239900",
                 "role": "driver",
                 "password": "Password123!",
@@ -45,6 +45,38 @@ async def test_staff_management_crud_api(db_session: AsyncSession, admin_user: U
             headers=headers,
         )
         assert resp_dup.status_code == 400
+
+        # 2.5 Promote existing PASSENGER to DRIVER via staff creation endpoint -> 200
+        p_user = User(full_name="Passenger To Driver", phone="+380971112233", role=UserRole.PASSENGER, is_active=True)
+        db_session.add(p_user)
+        await db_session.commit()
+
+        resp_promote = await client.post(
+            "/api/admin/auth/staff",
+            json={
+                "full_name": "Passenger Now Driver",
+                "phone": "+380971112233",
+                "role": "driver",
+                "password": "NewDriverPassword123!",
+            },
+            headers=headers,
+        )
+        assert resp_promote.status_code == 200
+        assert resp_promote.json()["id"] == p_user.id
+        assert resp_promote.json()["role"] == "driver"
+
+        # 2.6 Driver activation via POST /api/users/activate-driver
+        driver_token = create_access_token(p_user.id, p_user.role)
+        driver_headers = {"Authorization": f"Bearer {driver_token}"}
+        
+        # Wrong password -> 400
+        resp_act_bad = await client.post("/api/users/activate-driver", json={"password": "WrongPassword!"}, headers=driver_headers)
+        assert resp_act_bad.status_code == 400
+
+        # Correct password -> 200 OK
+        resp_act_good = await client.post("/api/users/activate-driver", json={"password": "NewDriverPassword123!"}, headers=driver_headers)
+        assert resp_act_good.status_code == 200
+        assert resp_act_good.json()["is_driver_activated"] is True
 
         # 3. Update staff member
         resp_update = await client.put(
@@ -68,6 +100,11 @@ async def test_staff_management_crud_api(db_session: AsyncSession, admin_user: U
         resp_unblock = await client.post(f"/api/admin/auth/staff/{staff_id}/unblock", headers=headers)
         assert resp_unblock.status_code == 200
         assert resp_unblock.json()["is_active"] is True
+
+        # 5.5 Demote staff member to passenger
+        resp_demote = await client.post(f"/api/admin/auth/staff/{staff_id}/demote-to-passenger", headers=headers)
+        assert resp_demote.status_code == 200
+        assert resp_demote.json()["role"] == "passenger"
 
         # 6. Delete staff member
         resp_del = await client.delete(f"/api/admin/auth/staff/{staff_id}", headers=headers)

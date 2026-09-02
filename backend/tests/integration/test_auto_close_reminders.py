@@ -88,3 +88,84 @@ async def test_auto_close_expired_trips(db_session: AsyncSession, admin_user: Us
 
     assert overdue_trip.status == TripStatus.COMPLETED
     assert booking.status == BookingStatus.NOSHOW
+
+
+@pytest.mark.asyncio
+async def test_passenger_trip_reminders_sets_is_reminder_sent_in_db(db_session: AsyncSession, monkeypatch):
+    """
+    Перевіряє, що відправка нагадування встановлює is_reminder_sent = True у базу даних,
+    а повторний виклик не відправляє подвійне повідомлення.
+    """
+    passenger = User(phone="+380991112233", full_name="Пасажир Тесту", telegram_id=987654321, role=UserRole.PASSENGER, is_active=True)
+    driver = User(phone="+380971112233", full_name="Водій Нагадування", role=UserRole.DRIVER, is_active=True)
+    from_loc = Location(name="Drohobych_RemindTest")
+    to_loc = Location(name="Lviv_RemindTest")
+    vehicle = Vehicle(model="SprintBus", plate_number="BC9999EX", total_seats=15, total_standing=0)
+
+    db_session.add_all([passenger, driver, from_loc, to_loc, vehicle])
+    await db_session.commit()
+
+    dep_time = datetime.now(KYIV_TZ) + timedelta(minutes=30)
+    trip = Trip(
+        driver_id=driver.id,
+        vehicle_id=vehicle.id,
+        from_location_id=from_loc.id,
+        to_location_id=to_loc.id,
+        departure_time=dep_time,
+        status=TripStatus.SCHEDULED,
+        seats_limit_snapshot=15,
+        standing_limit_snapshot=0,
+        price_seated=100.0,
+        price_standing=0.0,
+    )
+    db_session.add(trip)
+    await db_session.commit()
+
+    booking = Booking(
+        trip_id=trip.id,
+        passenger_id=passenger.id,
+        created_by_id=passenger.id,
+        booking_type=BookingType.SEATED,
+        source=BookingSource.BOT,
+        status=BookingStatus.RESERVED,
+        payment_method=PaymentMethod.CASH,
+        passengers_count=1,
+        amount_paid=100.0,
+        is_reminder_sent=False
+    )
+    db_session.add(booking)
+    await db_session.commit()
+
+    messages_sent = []
+
+    class DummyBot:
+        def __init__(self, token):
+            pass
+
+        async def send_message(self, chat_id, text, parse_mode=None):
+            messages_sent.append((chat_id, text))
+
+        class DummySession:
+            async def close(self):
+                pass
+
+        session = DummySession()
+
+    monkeypatch.setattr(reminders, "Bot", DummyBot)
+    monkeypatch.setattr(reminders, "async_session_maker", lambda: db_session)
+
+    #Перший виклик - повинен відправити 1 нагадування і встановити is_reminder_sent = True
+    await reminders.send_passenger_trip_reminders()
+
+    b_db = await db_session.get(Booking, booking.id)
+    assert len(messages_sent) == 1
+    assert b_db.is_reminder_sent is True
+
+    # Очищаємо список відправлених і викликаємо повторно (імітація перезапуску сервера)
+    messages_sent.clear()
+    reminders.reminded_booking_ids.clear()
+
+    # Другий виклик після перезапуску - НЕ повинен надсилати дублікат, бо в БД вже is_reminder_sent=True
+    await reminders.send_passenger_trip_reminders()
+    assert len(messages_sent) == 0
+

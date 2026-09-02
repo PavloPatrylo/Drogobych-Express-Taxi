@@ -24,6 +24,7 @@ def upgrade() -> None:
     op.execute("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'ADMIN';")
     op.execute("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'admin';")
     op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT 'true' NOT NULL;")
+    op.execute("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS is_reminder_sent BOOLEAN DEFAULT FALSE;")
     # ### end Alembic commands ###
 
 

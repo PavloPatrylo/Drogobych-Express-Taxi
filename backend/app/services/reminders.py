@@ -61,7 +61,7 @@ async def send_passenger_trip_reminders():
                 passenger_bookings = {}
                 for b in trip.bookings:
                     if b.status in (BookingStatus.RESERVED, BookingStatus.PAID) and b.passenger_id:
-                        if b.id in reminded_booking_ids:
+                        if getattr(b, 'is_reminder_sent', False) or b.id in reminded_booking_ids:
                             continue
                         p_id = b.passenger_id
                         if p_id not in passenger_bookings:
@@ -90,7 +90,9 @@ async def send_passenger_trip_reminders():
                     try:
                         await bot.send_message(chat_id=passenger.telegram_id, text=msg_text, parse_mode="Markdown")
                         for b in b_list:
+                            b.is_reminder_sent = True
                             reminded_booking_ids.add(b.id)
+                        await session.commit()
                         logger.info(f"Sent trip reminder to passenger {passenger.full_name} ({passenger.telegram_id}) for trip #{trip.id}")
                         await asyncio.sleep(0.1)
                     except Exception as e:

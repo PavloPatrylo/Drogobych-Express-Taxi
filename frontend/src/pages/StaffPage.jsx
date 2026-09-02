@@ -243,6 +243,7 @@ export default function StaffPage() {
             <option value="driver">🚚 Водії</option>
             <option value="dispatcher">🎧 Диспетчери</option>
             <option value="admin">👑 Власники / Адміни</option>
+                  <option value="passenger">🚶 Пасажир (Понизити до пасажира)</option>
           </select>
 
           {/* Status Filter */}
@@ -494,6 +495,7 @@ export default function StaffPage() {
                   <option value="driver">🚚 Водій</option>
                   <option value="dispatcher">🎧 Диспетчер</option>
                   <option value="admin">👑 Власник / Адмін</option>
+                  <option value="passenger">🚶 Пасажир (Понизити до пасажира)</option>
                 </select>
               </div>
 

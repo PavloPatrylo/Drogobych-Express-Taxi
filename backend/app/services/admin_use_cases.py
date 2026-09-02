@@ -2482,3 +2482,21 @@ async def promote_waitlist_bookings_use_case(db: AsyncSession, trip_id: int) -> 
         await manager.broadcast("BOOKING_MUTATED", {"trip_id": trip_id})
 
     return promoted
+
+
+async def change_user_role(db: AsyncSession, user_id: int, new_role: UserRole, actor: User) -> AdminUserResponse:
+    if actor.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Лише Головний Адміністратор має право змінювати ролі користувачів",
+        )
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Користувача не знайдено")
+
+    user.role = new_role
+    await db.commit()
+    await refresh_user_stats(db, user.id)
+    await db.commit()
+    await db.refresh(user)
+    return user_to_admin(user)
