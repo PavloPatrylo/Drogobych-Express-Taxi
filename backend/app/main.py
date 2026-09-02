@@ -68,6 +68,11 @@ from fastapi import FastAPI, APIRouter, Response
 async def favicon():
     return Response(status_code=204)
 
+@app.get("/health")
+@app.get("/api/health")
+async def healthcheck():
+    return {"status": "ok", "service": "drogobych-express-taxi-backend"}
+
 # Клієнтський Mini App (Пасажир / Водій)
 @app.get("/")
 async def serve_index():
