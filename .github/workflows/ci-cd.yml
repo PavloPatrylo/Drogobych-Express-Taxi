@@ -39,12 +39,14 @@ jobs:
 
       - name: Run Pytest
         env:
+          TESTING: "true"
           DB_HOST: localhost
           DB_PORT: 5432
           DB_USER: drogobych_admin
           DB_PASSWORD: ExpressTaxi2026SecurePass
           DB_NAME: drogobych_express_db
           SECRET_KEY: test_secret_key_for_ci
+          BOT_TOKEN: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
         run: |
           cd backend
           pytest
