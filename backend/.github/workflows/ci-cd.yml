@@ -1,0 +1,109 @@
+name: CI/CD Pipeline (Docker Hub & Oracle Cloud Deploy)
+
+on:
+  push:
+    branches: [ develop, main ]
+
+jobs:
+  test:
+    name: Run Unit & Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: drogobych_admin
+          POSTGRES_PASSWORD: ExpressTaxi2026SecurePass
+          POSTGRES_DB: drogobych_express_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pytest pytest-asyncio pytest-cov
+
+      - name: Run Pytest
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: drogobych_admin
+          DB_PASSWORD: ExpressTaxi2026SecurePass
+          DB_NAME: drogobych_express_db
+          SECRET_KEY: test_secret_key_for_ci
+        run: |
+          cd backend
+          pytest
+
+  build-and-push:
+    name: Build, Push & Auto-Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set Environment & Tags
+        id: meta
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "tag=latest" >> $GITHUB_OUTPUT
+            echo "sha_tag=prod-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=stage" >> $GITHUB_OUTPUT
+            echo "sha_tag=stage-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push Backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/drogobych-taxi-backend:${{ steps.meta.outputs.tag }}
+            ${{ secrets.DOCKER_USERNAME }}/drogobych-taxi-backend:${{ steps.meta.outputs.sha_tag }}
+
+      - name: Build and push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/drogobych-taxi-frontend:${{ steps.meta.outputs.tag }}
+            ${{ secrets.DOCKER_USERNAME }}/drogobych-taxi-frontend:${{ steps.meta.outputs.sha_tag }}
+
+      - name: Deploy to Oracle Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ github.ref == 'refs/heads/main' && secrets.PROD_HOST || secrets.STAGE_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/drogobych-express-taxi
+            # Витягуємо свіжий образ з Docker Hub
+            docker compose -f ${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }} pull
+            # Перезапускаємо сервіси без простою
+            docker compose -f ${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }} up -d --remove-orphans
