@@ -1,5 +1,5 @@
-﻿# Stage 1: Build React app
-FROM node:20-alpine AS builder
+﻿# Stage 1: Build React app natively on build host (prevents QEMU crash)
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -9,7 +9,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Stage 2: Serve static files with Nginx
+# Stage 2: Serve static files with target platform Nginx
 FROM nginx:alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html
