@@ -26,8 +26,8 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher()
 
-# Посилання на Telegram MiniApp у Ngrok
-WEB_APP_URL = "https://fletcher-inordinate-leontine.ngrok-free.dev"
+# Посилання на Telegram MiniApp
+WEB_APP_URL = settings.WEB_APP_URL
 
 # --- 1. Визначаємо стани (FSM) ---
 class AuthStates(StatesGroup):

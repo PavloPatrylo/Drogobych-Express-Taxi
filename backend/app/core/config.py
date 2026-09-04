@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     BOT_TOKEN: str
     SECRET_KEY: str
+    WEB_APP_URL: str = "https://fletcher-inordinate-leontine.ngrok-free.dev"
     
     CORS_ORIGINS: list[str] = [
         "https://fletcher-inordinate-leontine.ngrok-free.dev",

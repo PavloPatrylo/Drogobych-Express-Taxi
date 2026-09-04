@@ -75,12 +75,15 @@ async def healthcheck():
 
 # Клієнтський Mini App (Пасажир / Водій)
 @app.get("/")
+@app.get("/miniapp")
+@app.get("/miniapp/")
 async def serve_index():
     """
     Головна сторінка клієнтського Mini App.
     """
     return FileResponse("index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
+@app.get("/miniapp/app.js")
 @app.get("/app.js")
 async def serve_app_js():
     """
