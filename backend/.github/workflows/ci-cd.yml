@@ -121,3 +121,5 @@ jobs:
             docker compose -f ${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }} pull
             # Перезапускаємо сервіси без простою
             docker compose -f ${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }} up -d --remove-orphans
+            # Автоматично застосовуємо міграції бази даних
+            docker compose -f ${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }} exec -T backend alembic upgrade head
