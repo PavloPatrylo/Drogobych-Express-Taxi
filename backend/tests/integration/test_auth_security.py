@@ -30,6 +30,51 @@ async def test_telegram_webapp_auth_endpoint(db_session):
 
 
 @pytest.mark.asyncio
+async def test_telegram_webapp_auth_rejects_missing_and_spoofed_data():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        # 1. Missing init_data -> 422
+        resp_empty = await client.post("/api/auth/telegram-webapp", json={})
+        assert resp_empty.status_code == 422
+
+        # 2. Raw telegram_id without init_data -> 422
+        resp_spoof = await client.post("/api/auth/telegram-webapp", json={"telegram_id": 1685900931})
+        assert resp_spoof.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_telegram_webapp_auth_rejects_invalid_init_data():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        resp = await client.post("/api/auth/telegram-webapp", json={"init_data": "auth_date=12345&hash=badhash"})
+        assert resp.status_code == 401
+        assert "Telegram authentication failed" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_dev_login_security_guard(db_session):
+    class SessionContext:
+        async def __aenter__(self):
+            return db_session
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        # When DEV_AUTH_ENABLED is False (Stage/Prod) -> 403 Forbidden
+        with patch.object(settings, "DEV_AUTH_ENABLED", False):
+            resp = await client.post("/api/auth/dev-login", json={"telegram_id": 1685900931})
+            assert resp.status_code == 403
+            assert resp.json()["detail"] == "Dev authentication is disabled"
+
+        # When DEV_AUTH_ENABLED is True (Local Dev) -> 200 OK
+        with patch.object(settings, "DEV_AUTH_ENABLED", True), \
+             patch("app.db.database.async_session_maker", return_value=SessionContext()):
+            resp = await client.post("/api/auth/dev-login", json={"telegram_id": 999888777})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "access_token" in data
+            assert data["user"]["telegram_id"] == 999888777
+
+
+@pytest.mark.asyncio
 async def test_endpoint_security_matrix(db_session, passenger_user, driver_user):
     passenger_token = create_access_token(passenger_user.id, passenger_user.role)
     driver_token = create_access_token(driver_user.id, driver_user.role)

@@ -47,8 +47,11 @@ class UserRead(UserBase):
         from_attributes = True
 
 class TelegramWebAppAuth(BaseModel):
-    init_data: Optional[str] = ""
+    init_data: str = Field(..., min_length=1, description="Raw signed query string from Telegram.WebApp.initData")
+
+class DevLoginRequest(BaseModel):
     telegram_id: Optional[int] = None
+    role: Optional[UserRole] = None
 
 class AuthTokenResponse(BaseModel):
     access_token: str

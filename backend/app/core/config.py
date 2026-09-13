@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     ]
     MAX_INIT_DATA_AGE_SECONDS: int = 86400
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
+    ENVIRONMENT: str = "development"
+    DEV_AUTH_ENABLED: bool = False
     
     @property
     def database_url(self) -> str:

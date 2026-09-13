@@ -4,34 +4,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     tg.expand();
     tg.setHeaderColor("#facc15");
     
-    let parsedId = tg.initDataUnsafe?.user?.id;
-    if (!parsedId || isNaN(Number(parsedId))) {
-        const urlParams = new URLSearchParams(window.location.search);
-        const paramTgId = urlParams.get('tg_id');
-        if (paramTgId && !isNaN(Number(paramTgId))) {
-            parsedId = Number(paramTgId);
-        } else {
-            const savedId = localStorage.getItem('express_taxi_tg_id');
-            if (savedId && !isNaN(Number(savedId))) {
-                parsedId = Number(savedId);
-            } else {
-                parsedId = 1685900931;
-            }
-        }
-    }
-
-    let telegramId = Number(parsedId);
-    if (isNaN(telegramId)) telegramId = 1685900931;
-    localStorage.setItem('express_taxi_tg_id', telegramId);
+    let telegramId = null;
     let fallbackName = tg.initDataUnsafe?.user?.first_name || "Користувач";
 
     const API_URL = window.location.origin + '/api';
 
     let authToken = sessionStorage.getItem('express_taxi_token') || null;
 
+    function showTelegramRequiredScreen() {
+        document.body.innerHTML = `
+            <div style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #111827; color: white; padding: 24px; text-align: center; font-family: sans-serif;">
+                <div style="font-size: 56px; margin-bottom: 16px;">🚕</div>
+                <h1 style="font-size: 22px; font-weight: 800; margin-bottom: 8px;">Express Taxi Mini App</h1>
+                <p style="color: #9CA3AF; max-width: 380px; line-height: 1.5; font-size: 14px; margin-bottom: 24px;">
+                    Цей сервіс працює виключно як захищений Telegram Mini App.<br>
+                    Будь ласка, відкрийте додаток через меню офіційного бота в Telegram.
+                </p>
+                <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 12px 20px; font-size: 13px; color: #FCD34D;">
+                    🔒 Прямий доступ без валідного Telegram-сеансу заборонено
+                </div>
+            </div>
+        `;
+    }
+
+    function showDevModeBadge(user) {
+        let badge = document.getElementById('dev-mode-badge');
+        if (!badge) {
+            badge = document.createElement('div');
+            badge.id = 'dev-mode-badge';
+            badge.className = 'fixed top-2 right-2 z-50 bg-purple-700 text-white text-[11px] font-bold px-3 py-1.5 rounded-full shadow-lg border border-purple-400 flex items-center gap-1.5';
+            document.body.appendChild(badge);
+        }
+        badge.innerHTML = `🛠️ DEV: ${user.role} (ID: ${user.telegram_id})`;
+    }
+
     async function authFetch(url, options = {}) {
         options.headers = options.headers || {};
-        if (!authToken && tg && tg.initData) {
+        if (!authToken) {
             await initAuth();
         }
         if (authToken) {
@@ -39,7 +48,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         options.headers['ngrok-skip-browser-warning'] = 'true';
         let res = await fetch(url, options);
-        if (res.status === 401 && tg && tg.initData) {
+        if (res.status === 401) {
             await initAuth();
             if (authToken) {
                 options.headers['Authorization'] = `Bearer ${authToken}`;
@@ -51,33 +60,72 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function initAuth() {
         try {
-            const payload = {
-                init_data: (tg && tg.initData) ? tg.initData : '',
-                telegram_id: telegramId
-            };
-            const res = await fetch(`${API_URL}/auth/telegram-webapp`, {
+            // Режим 1: Реальний Telegram Mini App (підписані дані tg.initData)
+            if (tg && tg.initData && tg.initData.trim() !== '') {
+                const res = await fetch(`${API_URL}/auth/telegram-webapp`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'ngrok-skip-browser-warning': 'true'
+                    },
+                    body: JSON.stringify({ init_data: tg.initData })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    authToken = data.access_token;
+                    sessionStorage.setItem('express_taxi_token', authToken);
+                    if (data.user && data.user.telegram_id) {
+                        telegramId = data.user.telegram_id;
+                        localStorage.setItem('express_taxi_tg_id', telegramId);
+                    }
+                    initWebSocket();
+                    return true;
+                } else {
+                    const errData = await res.json().catch(() => ({}));
+                    console.error("Telegram WebApp auth rejected:", res.status, errData);
+                    showTelegramRequiredScreen();
+                    return false;
+                }
+            }
+
+            // Режим 2: Локальна розробка у звичайному браузері (Chrome) через /auth/dev-login
+            const urlParams = new URLSearchParams(window.location.search);
+            const devTgId = urlParams.get('dev_tg_id') || urlParams.get('tg_id');
+            const devRole = urlParams.get('dev_role');
+            const devPayload = {};
+            if (devTgId && !isNaN(Number(devTgId))) devPayload.telegram_id = Number(devTgId);
+            if (devRole) devPayload.role = devRole.toUpperCase();
+
+            const devRes = await fetch(`${API_URL}/auth/dev-login`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'ngrok-skip-browser-warning': 'true'
                 },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(devPayload)
             });
-            if (res.ok) {
-                const data = await res.json();
-                authToken = data.access_token;
+
+            if (devRes.ok) {
+                const devData = await devRes.json();
+                authToken = devData.access_token;
                 sessionStorage.setItem('express_taxi_token', authToken);
-                if (data.user && data.user.telegram_id) {
-                    telegramId = data.user.telegram_id;
+                if (devData.user && devData.user.telegram_id) {
+                    telegramId = devData.user.telegram_id;
+                    localStorage.setItem('express_taxi_tg_id', telegramId);
                 }
+                showDevModeBadge(devData.user);
                 initWebSocket();
-            } else {
-                const errData = await res.json().catch(() => ({}));
-                console.error("Telegram WebApp auth server error:", res.status, errData);
+                return true;
+            } else if (devRes.status === 403) {
+                // Dev login вимкнено (на Stage або Prod при прямому вході без Telegram)
+                showTelegramRequiredScreen();
+                return false;
             }
         } catch (e) {
-            console.error("Telegram WebApp auth error:", e);
+            console.error("Authentication error:", e);
         }
+        return false;
     }
 
     await initAuth();

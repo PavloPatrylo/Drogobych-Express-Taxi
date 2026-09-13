@@ -159,7 +159,7 @@ async def sample_trip(db_session: AsyncSession, admin_user: User):
     from zoneinfo import ZoneInfo
     KYIV_TZ = ZoneInfo("Europe/Kyiv")
     now_kyiv = datetime.now(KYIV_TZ)
-    departure_dt = now_kyiv + timedelta(days=1)
+    departure_dt = (now_kyiv + timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
     arrival_dt = departure_dt + timedelta(hours=1, minutes=30)
     
     trip = Trip(

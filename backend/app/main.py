@@ -73,6 +73,12 @@ async def favicon():
 async def healthcheck():
     return {"status": "ok", "service": "drogobych-express-taxi-backend"}
 
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+INDEX_HTML_PATH = BASE_DIR / "index.html"
+APP_JS_PATH = BASE_DIR / "app.js"
+
 # Клієнтський Mini App (Пасажир / Водій)
 @app.get("/")
 @app.get("/miniapp")
@@ -81,7 +87,7 @@ async def serve_index():
     """
     Головна сторінка клієнтського Mini App.
     """
-    return FileResponse("index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(str(INDEX_HTML_PATH), headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/miniapp/app.js")
 @app.get("/app.js")
@@ -89,4 +95,4 @@ async def serve_app_js():
     """
     JS скрипт для клієнтського Mini App.
     """
-    return FileResponse("app.js", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(str(APP_JS_PATH), headers={"Cache-Control": "no-cache, no-store, must-revalidate"})

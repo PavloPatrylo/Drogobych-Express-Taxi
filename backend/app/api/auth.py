@@ -1,4 +1,4 @@
-# app/api/auth.py
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +8,7 @@ from app.core.config import settings
 from app.core.telegram import verify_telegram_webapp_init_data
 from app.db.database import get_db
 from app.db.models import User, UserStats, UserRole
-from app.schemas.user import TelegramWebAppAuth, AuthTokenResponse, UserRead
+from app.schemas.user import TelegramWebAppAuth, DevLoginRequest, AuthTokenResponse, UserRead
 from app.services.auth_service import create_access_token
 
 router = APIRouter(prefix="/auth", tags=["Public Authentication"])
@@ -21,44 +21,33 @@ async def telegram_webapp_login(
     """
     Authenticates Telegram WebApp initData, auto-provisions PASSENGER users if new,
     and returns a valid JWT Access Token.
+    Strictly verifies Telegram HMAC-SHA256 signature and rejects unverified or spoofed requests.
     """
-    tg_id = None
-    first_name = ""
-    last_name = ""
-    username = ""
-
-    if payload.init_data:
-        try:
-            data = verify_telegram_webapp_init_data(
-                init_data=payload.init_data,
-                bot_token=settings.BOT_TOKEN,
-                max_age_seconds=settings.MAX_INIT_DATA_AGE_SECONDS
-            )
-            tg_user = data.get("user") or {}
-            tg_id = tg_user.get("id")
-            first_name = tg_user.get("first_name", "")
-            last_name = tg_user.get("last_name", "")
-            username = tg_user.get("username", "")
-        except ValueError as e:
-            if not payload.telegram_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Telegram authentication failed: {str(e)}"
-                )
-
-    if not tg_id:
-        tg_id = payload.telegram_id
-
-    if not tg_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User data or telegram_id missing"
+    try:
+        data = verify_telegram_webapp_init_data(
+            init_data=payload.init_data,
+            bot_token=settings.BOT_TOKEN,
+            max_age_seconds=settings.MAX_INIT_DATA_AGE_SECONDS
         )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Telegram authentication failed: {str(e)}"
+        )
+
+    tg_user = data.get("user")
+    if not tg_user or not tg_user.get("id"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Telegram user payload is missing from initData"
+        )
+
+    tg_id = int(tg_user["id"])
 
     # 1. Look up existing user by telegram_id
     stmt = (
         select(User)
-        .where(User.telegram_id == int(tg_id))
+        .where(User.telegram_id == tg_id)
         .options(selectinload(User.stats))
     )
     result = await db.execute(stmt)
@@ -77,7 +66,7 @@ async def telegram_webapp_login(
         full_name = f"{first_name} {last_name}".strip() or tg_user.get("username") or "Пасажир"
 
         user = User(
-            telegram_id=int(tg_id),
+            telegram_id=tg_id,
             full_name=full_name,
             role=UserRole.PASSENGER,
             is_active=True,
@@ -97,6 +86,78 @@ async def telegram_webapp_login(
     # 3. Create Access Token with internal user.id as sub
     token = create_access_token(user_id=user.id, role=user.role)
 
+    return AuthTokenResponse(
+        access_token=token,
+        token_type="bearer",
+        user=UserRead.model_validate(user)
+    )
+
+
+@router.post("/dev-login", response_model=AuthTokenResponse)
+async def dev_login(
+    payload: Optional[DevLoginRequest] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Development-only login endpoint for running in browser (Chrome) without Telegram.
+    Strictly disabled unless DEV_AUTH_ENABLED is explicitly True in server config.
+    """
+    if not settings.DEV_AUTH_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Dev authentication is disabled"
+        )
+
+    req_tg_id = payload.telegram_id if payload else None
+    req_role = payload.role if payload else None
+
+    user = None
+    if req_tg_id:
+        stmt = (
+            select(User)
+            .where(User.telegram_id == req_tg_id)
+            .options(selectinload(User.stats))
+        )
+        user = (await db.execute(stmt)).scalar_one_or_none()
+
+    if not user and req_role:
+        stmt = (
+            select(User)
+            .where(User.role == req_role, User.is_active == True)
+            .options(selectinload(User.stats))
+            .limit(1)
+        )
+        user = (await db.execute(stmt)).scalar_one_or_none()
+
+    if not user:
+        stmt = (
+            select(User)
+            .where(User.is_active == True)
+            .options(selectinload(User.stats))
+            .limit(1)
+        )
+        user = (await db.execute(stmt)).scalar_one_or_none()
+
+    if not user:
+        dev_id = req_tg_id or 1685900931
+        user = User(
+            telegram_id=dev_id,
+            full_name="Локальний Тестер",
+            role=req_role or UserRole.PASSENGER,
+            is_active=True,
+            stats=UserStats(total_trips=0, total_noshows=0, trust_score_cached=100)
+        )
+        db.add(user)
+        await db.commit()
+
+        stmt_reload = (
+            select(User)
+            .where(User.id == user.id)
+            .options(selectinload(User.stats))
+        )
+        user = (await db.execute(stmt_reload)).scalar_one()
+
+    token = create_access_token(user_id=user.id, role=user.role)
     return AuthTokenResponse(
         access_token=token,
         token_type="bearer",
