@@ -109,7 +109,6 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         if: env.SSH_PRIVATE_KEY != ''
-        continue-on-error: true
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ github.ref == 'refs/heads/main' && secrets.PROD_HOST || secrets.STAGE_HOST }}
@@ -117,7 +116,10 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/drogobych-express-taxi
-            # Витягуємо свіжий образ з Docker Hub
-            docker compose -f ${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }} pull
-            # Перезапускаємо сервіси без простою
-            docker compose -f ${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }} up -d --remove-orphans
+            COMPOSE_FILE="${{ github.ref == 'refs/heads/main' && 'docker-compose.prod.yml' || 'docker-compose.stage.yml' }}"
+            # 1. Витягуємо свіжі образи з Docker Hub
+            docker compose -f $COMPOSE_FILE pull
+            # 2. Перезапускаємо сервіси без простою
+            docker compose -f $COMPOSE_FILE up -d --remove-orphans
+            # 3. Автоматично застосовуємо міграції бази даних
+            docker compose -f $COMPOSE_FILE exec -T backend alembic upgrade head

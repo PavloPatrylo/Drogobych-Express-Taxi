@@ -81,6 +81,27 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
   });
   const [isAddingBooking, setIsAddingBooking] = useState(false);
 
+  const handlePhoneChange = (e) => {
+    const inputVal = e.target.value;
+    let cleaned = inputVal.replace(/[^\d+]/g, '');
+    if (cleaned.startsWith('+')) {
+      cleaned = '+' + cleaned.slice(1).replace(/\+/g, '');
+    } else {
+      cleaned = cleaned.replace(/\+/g, '');
+    }
+    const digitsOnly = cleaned.replace(/\D/g, '');
+    if (digitsOnly.startsWith('380') && digitsOnly.length > 12) return;
+    if (!digitsOnly.startsWith('380') && digitsOnly.length > 10) return;
+
+    setNewBooking(prev => ({ ...prev, phone: cleaned }));
+  };
+
+  const newBookingPhoneDigits = (newBooking.phone || '').replace(/\D/g, '');
+  const newBookingNormalized10 = (newBookingPhoneDigits.startsWith('380') && newBookingPhoneDigits.length === 12)
+    ? newBookingPhoneDigits.slice(2)
+    : newBookingPhoneDigits;
+  const isNewBookingPhoneValid = newBookingNormalized10.length === 10 && newBookingNormalized10.startsWith('0');
+
   // Filter passengers in manifest table
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -277,16 +298,17 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
       digits = digits.slice(2);
     }
     if (digits.length !== 10 || !digits.startsWith('0')) {
-      alert('⚠️ Номер телефону повинен містити рівно 10 цифр (наприклад: 0971234567 або +380971234567)!');
+      alert('⚠️ Номер телефону повинен містити рівно 10 цифр і починатися з 0 (наприклад: 0971234567 або +380971234567)!');
       return;
     }
+    const normalizedPhone = `+38${digits}`;
     setIsAddingBooking(true);
     try {
       await api.post(`/trips/${currentTrip.id}/manifest/booking`, {
         booking_type: newBooking.booking_type,
         source: newBooking.source,
-        phone: newBooking.phone,
-        full_name: newBooking.full_name || newBooking.phone,
+        phone: normalizedPhone,
+        full_name: newBooking.full_name || normalizedPhone,
         seats: Number(newBooking.seats),
         comment: newBooking.comment,
       });
@@ -1097,15 +1119,32 @@ export default function TripManifestModal({ isOpen, onClose, trip: initialTrip, 
                   </div>
 
                   <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Телефон *</label>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-slate-400 font-semibold text-xs">Телефон *</label>
+                      {newBooking.phone && (
+                        <span className={`text-[11px] font-mono font-bold ${isNewBookingPhoneValid ? 'text-emerald-400' : 'text-amber-400'}`}>
+                          {isNewBookingPhoneValid ? `✓ +38${newBookingNormalized10}` : `${newBookingNormalized10.length}/10 цифр`}
+                        </span>
+                      )}
+                    </div>
                     <input
-                      type="text"
-                      placeholder="+380XXXXXXXXX"
+                      type="tel"
+                      inputMode="numeric"
+                      placeholder="0971234567 або +380971234567"
                       value={newBooking.phone}
-                      onChange={(e) => setNewBooking({ ...newBooking, phone: e.target.value })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-slate-200 outline-none focus:border-yellow-400 font-mono"
+                      onChange={handlePhoneChange}
+                      className={`w-full bg-slate-900 border rounded-lg p-2 text-slate-200 outline-none font-mono transition-colors ${
+                        newBooking.phone
+                          ? isNewBookingPhoneValid
+                            ? 'border-emerald-500/60 focus:border-emerald-400'
+                            : 'border-amber-500/60 focus:border-amber-400'
+                          : 'border-slate-800 focus:border-yellow-400'
+                      }`}
                       required
                     />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Тільки цифри номера (літери та сторонні символи блокуються).
+                    </p>
                   </div>
 
                   <div>

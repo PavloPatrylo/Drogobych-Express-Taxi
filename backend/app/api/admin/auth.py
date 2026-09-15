@@ -50,35 +50,6 @@ async def get_me(
     """
     return current_user
 
-@router.post("/login")
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(), 
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Вхід в систему. 
-    form_data.username - це номер телефону.
-    """
-    # 1. Автентифікація через сервіс
-    user = await auth_service.authenticate_user(db, form_data.username, form_data.password)
-    
-    # 2. Генерація токена через сервіс
-    token = auth_service.create_access_token(user.id, user.role)
-    
-    return {
-        "access_token": token, 
-        "token_type": "bearer"
-    }
-
-@router.get("/me", response_model=UserResponse)
-async def get_me(
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Повертає профіль поточного адміністратора/диспетчера.
-    """
-    return current_user
-
 @router.get(
     "/staff",
     response_model=list[UserResponse],
@@ -93,8 +64,6 @@ async def get_staff(
     """
     return await auth_service.get_staff_list(db)
 
-
-from app.api.deps import get_current_user, check_admin_access, check_owner_access
 
 @router.post("/staff", response_model=UserResponse)
 async def create_staff_member(

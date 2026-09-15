@@ -118,3 +118,31 @@ async def test_blocked_passenger_booking_prevention(db_session: AsyncSession, ad
         await admin_use_cases.create_manifest_booking_use_case(db_session, trip.id, b_blocked, actor=admin_user)
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_manifest_booking_invalid_phone_rejected(
+    db_session: AsyncSession, sample_trip: Trip, dispatcher_user: User
+):
+    """
+    Перевіряє, що невалідні номери (літери, менше або більше 10 цифр, без 0) відхиляються.
+    """
+    invalid_phones = [
+        "123",
+        "abcdefghij",
+        "097123",
+        "1234567890",
+        "+38012345",
+        "097123456789",
+    ]
+
+    for p in invalid_phones:
+        with pytest.raises(ValueError):
+            AdminManifestBookingCreate(
+                booking_type=BookingType.SEATED,
+                source=BookingSource.PHONE,
+                phone=p,
+                full_name="Тест Тестовий",
+                seats=1,
+            )
+

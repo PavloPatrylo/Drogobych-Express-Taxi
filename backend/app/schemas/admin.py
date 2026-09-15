@@ -197,6 +197,18 @@ class AdminManifestBookingCreate(BaseModel):
     seats: int = Field(1, gt=0)
     comment: Optional[str] = None
 
+    @field_validator("phone")
+    def validate_phone_number(cls, v: str) -> str:
+        import re
+        digits = re.sub(r"\D", "", v or "")
+        if digits.startswith("380") and len(digits) == 12:
+            digits = digits[2:]
+        if len(digits) != 10:
+            raise ValueError("Номер телефону повинен містити рівно 10 цифр (наприклад: 0971234567 або +380971234567)")
+        if not digits.startswith("0"):
+            raise ValueError("Номер телефону повинен починатися з 0 (наприклад: 0971234567)")
+        return f"+38{digits}"
+
 
 class AdminBookingStatusUpdate(BaseModel):
     status: BookingStatus

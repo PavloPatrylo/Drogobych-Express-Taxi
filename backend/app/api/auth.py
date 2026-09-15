@@ -124,6 +124,27 @@ async def dev_login(
         stmt = (
             select(User)
             .where(User.role == req_role, User.is_active == True)
+            .order_by(
+                User.telegram_id.isnot(None).desc(),
+                (User.id == 34).desc() if req_role == UserRole.DRIVER else (User.id == 33).desc(),
+                User.id.desc()
+            )
+            .options(selectinload(User.stats))
+            .limit(1)
+        )
+        user = (await db.execute(stmt)).scalar_one_or_none()
+
+    if not user:
+        # Для Mini App за замовчуванням вибираємо пасажира (щоб не брати акаунт адміна)
+        target_role = req_role or UserRole.PASSENGER
+        stmt = (
+            select(User)
+            .where(User.role == target_role, User.is_active == True)
+            .order_by(
+                User.telegram_id.isnot(None).desc(),
+                (User.id == 33).desc(),
+                User.id.desc()
+            )
             .options(selectinload(User.stats))
             .limit(1)
         )
@@ -133,6 +154,7 @@ async def dev_login(
         stmt = (
             select(User)
             .where(User.is_active == True)
+            .order_by(User.telegram_id.isnot(None).desc(), User.id.desc())
             .options(selectinload(User.stats))
             .limit(1)
         )
@@ -142,9 +164,11 @@ async def dev_login(
         dev_id = req_tg_id or 1685900931
         user = User(
             telegram_id=dev_id,
+            phone="+380993227890",
             full_name="Локальний Тестер",
             role=req_role or UserRole.PASSENGER,
             is_active=True,
+            is_driver_activated=True,
             stats=UserStats(total_trips=0, total_noshows=0, trust_score_cached=100)
         )
         db.add(user)
@@ -156,6 +180,26 @@ async def dev_login(
             .options(selectinload(User.stats))
         )
         user = (await db.execute(stmt_reload)).scalar_one()
+
+    # СУВОРА ГАРАНТІЯ ДЛЯ DEV-РЕЖИМУ:
+    # Користувач ОБОВ'ЯЗКОВО повинен мати валідний telegram_id та підтверджений телефон,
+    # щоб усі функції Mini App (квитки, маніфест, бронювання) працювали без помилок.
+    modified = False
+    if user.telegram_id is None:
+        user.telegram_id = 1000000000 + user.id
+        modified = True
+    if not user.phone:
+        user.phone = f"+3809900000{user.id:02d}"
+        modified = True
+    if not user.is_active:
+        user.is_active = True
+        modified = True
+    if user.role == UserRole.DRIVER and not user.is_driver_activated:
+        user.is_driver_activated = True
+        modified = True
+    if modified:
+        await db.commit()
+        await db.refresh(user)
 
     token = create_access_token(user_id=user.id, role=user.role)
     return AuthTokenResponse(

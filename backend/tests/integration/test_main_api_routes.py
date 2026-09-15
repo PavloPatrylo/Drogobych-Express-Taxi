@@ -23,3 +23,19 @@ async def test_main_middleware_and_static_routes():
         # Test API route 404 or 401
         resp_api = await client.get("/api/trips")
         assert resp_api.status_code in (200, 401, 403, 404)
+
+        # Test Liveness probe
+        resp_live = await client.get("/health/live")
+        assert resp_live.status_code == 200
+        assert resp_live.json().get("status") == "ok"
+
+        # Test Readiness probe
+        resp_ready = await client.get("/health/ready")
+        assert resp_ready.status_code == 200
+        assert resp_ready.json().get("status") == "ready"
+        assert resp_ready.json().get("database") == "connected"
+
+        # Test legacy /health endpoint (readiness backward compatibility)
+        resp_health = await client.get("/health")
+        assert resp_health.status_code == 200
+        assert resp_health.json().get("status") == "ready"

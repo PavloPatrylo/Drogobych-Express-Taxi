@@ -62,16 +62,46 @@ async def on_startup():
     asyncio.create_task(start_reminder_scheduler())
     asyncio.create_task(dp.start_polling(bot, handle_signals=False))
 
-from fastapi import FastAPI, APIRouter, Response
+from fastapi import Response, Depends, status
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.db.database import get_db
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return Response(status_code=204)
 
-@app.get("/health")
-@app.get("/api/health")
-async def healthcheck():
+@app.get("/health/live", tags=["Health"])
+async def health_live():
+    """
+    Liveness probe: перевіряє, що процес FastAPI живий та приймає HTTP-запити.
+    """
     return {"status": "ok", "service": "drogobych-express-taxi-backend"}
+
+@app.get("/health/ready", tags=["Health"])
+@app.get("/health", tags=["Health"])
+@app.get("/api/health", tags=["Health"])
+async def health_ready(db: AsyncSession = Depends(get_db)):
+    """
+    Readiness probe: перевіряє готовність застосунку та активне підключення до PostgreSQL.
+    """
+    try:
+        await db.execute(text("SELECT 1"))
+        return {
+            "status": "ready",
+            "database": "connected",
+            "service": "drogobych-express-taxi-backend",
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "unavailable",
+                "database": "disconnected",
+                "error": "Database connectivity check failed",
+            },
+        )
 
 from pathlib import Path
 

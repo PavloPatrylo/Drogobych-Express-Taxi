@@ -1,11 +1,20 @@
 document.addEventListener('DOMContentLoaded', async () => {
-    const tg = window.Telegram.WebApp;
-    if (tg.ready) tg.ready();
-    tg.expand();
-    tg.setHeaderColor("#facc15");
+    // 1. Сувора та безпечна перевірка існування Telegram WebApp SDK
+    const isTelegramAvailable = typeof window !== 'undefined' && Boolean(window.Telegram && window.Telegram.WebApp);
+    const tg = isTelegramAvailable ? window.Telegram.WebApp : null;
+
+    if (tg) {
+        try {
+            if (typeof tg.ready === 'function') tg.ready();
+            if (typeof tg.expand === 'function') tg.expand();
+            if (typeof tg.setHeaderColor === 'function') tg.setHeaderColor("#facc15");
+        } catch (tgInitErr) {
+            console.warn("Telegram WebApp initialization error:", tgInitErr);
+        }
+    }
     
-    let telegramId = null;
-    let fallbackName = tg.initDataUnsafe?.user?.first_name || "Користувач";
+    let telegramId = localStorage.getItem('express_taxi_tg_id') ? Number(localStorage.getItem('express_taxi_tg_id')) : null;
+    let fallbackName = tg?.initDataUnsafe?.user?.first_name || "Користувач";
 
     const API_URL = window.location.origin + '/api';
 
@@ -32,10 +41,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!badge) {
             badge = document.createElement('div');
             badge.id = 'dev-mode-badge';
-            badge.className = 'fixed top-2 right-2 z-50 bg-purple-700 text-white text-[11px] font-bold px-3 py-1.5 rounded-full shadow-lg border border-purple-400 flex items-center gap-1.5';
+            badge.className = 'fixed top-3 right-3 z-50 bg-gray-900/95 text-white text-xs px-3 py-1.5 rounded-2xl shadow-2xl border border-purple-500/60 backdrop-blur-md flex items-center gap-2 font-sans';
             document.body.appendChild(badge);
         }
-        badge.innerHTML = `🛠️ DEV: ${user.role} (ID: ${user.telegram_id})`;
+        const userRoleUpper = (user.role || '').toUpperCase();
+        badge.innerHTML = `
+            <span class="text-purple-300 font-extrabold flex items-center gap-1 text-[11px] tracking-wide uppercase">🛠️ Dev Режим</span>
+            <select id="dev-role-select" class="bg-gray-800 text-yellow-400 text-xs font-bold py-1 px-2 rounded-xl border border-gray-700 outline-none cursor-pointer hover:border-yellow-400 transition-colors">
+                <option value="PASSENGER" ${userRoleUpper === 'PASSENGER' ? 'selected' : ''}>🚶 Пасажир</option>
+                <option value="DRIVER" ${userRoleUpper === 'DRIVER' ? 'selected' : ''}>🚕 Водій</option>
+                <option value="ADMIN" ${userRoleUpper === 'ADMIN' ? 'selected' : ''}>👑 Адмін</option>
+            </select>
+        `;
+        const selectEl = badge.querySelector('#dev-role-select');
+        if (selectEl) {
+            selectEl.onchange = (e) => {
+                sessionStorage.setItem('express_taxi_dev_role', e.target.value);
+                sessionStorage.removeItem('express_taxi_token');
+                window.location.href = window.location.pathname;
+            };
+        }
     }
 
     async function authFetch(url, options = {}) {
@@ -92,7 +117,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Режим 2: Локальна розробка у звичайному браузері (Chrome) через /auth/dev-login
             const urlParams = new URLSearchParams(window.location.search);
             const devTgId = urlParams.get('dev_tg_id') || urlParams.get('tg_id');
-            const devRole = urlParams.get('dev_role');
+            const devRole = urlParams.get('dev_role') || sessionStorage.getItem('express_taxi_dev_role');
             const devPayload = {};
             if (devTgId && !isNaN(Number(devTgId))) devPayload.telegram_id = Number(devTgId);
             if (devRole) devPayload.role = devRole.toUpperCase();
@@ -117,8 +142,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 showDevModeBadge(devData.user);
                 initWebSocket();
                 return true;
-            } else if (devRes.status === 403) {
-                // Dev login вимкнено (на Stage або Prod при прямому вході без Telegram)
+            } else {
+                // Dev login вимкнено або недоступний (на Stage / Prod при вході без Telegram)
                 showTelegramRequiredScreen();
                 return false;
             }
@@ -284,6 +309,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
             const userData = await response.json();
+            if (userData.telegram_id) {
+                telegramId = Number(userData.telegram_id);
+                localStorage.setItem('express_taxi_tg_id', telegramId);
+            }
             
             if (!userData.phone || !userData.phone.trim()) {
                 console.warn("⚠️ Телефон не підтверджено у чаті бота.");
@@ -389,11 +418,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 fetchDriverManifest();
 
-            // --- РОЛЬ: ПАСАЖИР (або будь-яка інша) ---
+            // --- РОЛЬ: АДМІНІСТРАТОР / ДИСПЕТЧЕР ---
+            } else if (userData.role === 'ADMIN' || userData.role === 'admin') {
+                roleEl.textContent = 'Адміністратор 👑';
+                roleEl.className = 'text-purple-800 text-xs font-bold';
+                tripsEl.textContent = `🚕 Поїздок: ${userData.stats ? userData.stats.total_trips : 0}`;
+                fetchLocations();
+            } else if (userData.role === 'DISPATCHER' || userData.role === 'dispatcher') {
+                roleEl.textContent = 'Диспетчер 🎧';
+                roleEl.className = 'text-blue-800 text-xs font-bold';
+                tripsEl.textContent = `🚕 Поїздок: ${userData.stats ? userData.stats.total_trips : 0}`;
+                fetchLocations();
+            // --- РОЛЬ: ПАСАЖИР ---
             } else {
                 roleEl.textContent = 'Пасажир 🚶';
+                roleEl.className = 'text-black/70 text-xs font-semibold mt-0.5';
                 tripsEl.textContent = `🚕 Поїздок: ${userData.stats ? userData.stats.total_trips : 0}`;
-
                 fetchLocations();
             }
 
@@ -659,7 +699,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         historyContainer.innerHTML = '';
 
         try {
-            const response = await authFetch(`${API_URL}/bookings/my/${telegramId}`);
+            const ticketsUrl = (telegramId && !isNaN(telegramId)) ? `${API_URL}/bookings/my/${telegramId}` : `${API_URL}/bookings/my`;
+            const response = await authFetch(ticketsUrl);
             if (!response.ok) throw new Error('Помилка завантаження');
             const tickets = await response.json();
 
@@ -772,7 +813,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const driverManifestContainer = document.getElementById('driver-manifest-container');
 
         try {
-            const url = `${API_URL}/trips/driver/${telegramId}/manifest?target_date=${currentDriverDate}`;
+            const url = (telegramId && !isNaN(telegramId)) 
+                ? `${API_URL}/trips/driver/${telegramId}/manifest?target_date=${currentDriverDate}`
+                : `${API_URL}/trips/driver/manifest?target_date=${currentDriverDate}`;
             const response = await authFetch(url);
             if (!response.ok) throw new Error('Помилка маніфесту');
             const manifests = await response.json();
@@ -1119,8 +1162,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         container.innerHTML = '<div class="text-center text-gray-400 py-4">Завантаження підсумків...</div>';
 
         try {
-            // 👇 ДОДАЛИ dateQuery В КІНЕЦЬ URL 👇
-            const response = await authFetch(`${API_URL}/trips/driver/${telegramId}/summary${dateQuery}`);
+            const summaryUrl = (telegramId && !isNaN(telegramId))
+                ? `${API_URL}/trips/driver/${telegramId}/summary${dateQuery}`
+                : `${API_URL}/trips/driver/summary${dateQuery}`;
+            const response = await authFetch(summaryUrl);
             
             if (!response.ok) throw new Error();
             const data = await response.json();
@@ -1189,7 +1234,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             dateToObj.setDate(dateToObj.getDate() + 6);
             const dateToStr = dateToObj.toLocaleDateString('sv-SE', { timeZone: 'Europe/Kyiv' });
 
-            const response = await authFetch(`${API_URL}/trips/driver/${telegramId}/published-schedule?date_from=${todayStr}&date_to=${dateToStr}`);
+            const schedUrl = (telegramId && !isNaN(telegramId))
+                ? `${API_URL}/trips/driver/${telegramId}/published-schedule?date_from=${todayStr}&date_to=${dateToStr}`
+                : `${API_URL}/trips/driver/published-schedule?date_from=${todayStr}&date_to=${dateToStr}`;
+            const response = await authFetch(schedUrl);
 
             if (!response.ok) throw new Error();
             const data = await response.json();

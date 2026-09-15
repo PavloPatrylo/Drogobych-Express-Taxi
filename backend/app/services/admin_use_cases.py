@@ -1711,7 +1711,10 @@ async def create_manifest_booking_use_case(
     elif len(phone_raw) == 12 and phone_raw.startswith("380"):
         formatted_phone = f"+{phone_raw}"
     else:
-        formatted_phone = payload.phone
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Номер телефону повинен містити рівно 10 цифр і починатися з 0 (наприклад: 0971234567 або +380971234567)",
+        )
 
     passenger_result = await db.execute(select(User).where(User.phone.in_([formatted_phone, payload.phone])))
     passenger = passenger_result.scalars().first()

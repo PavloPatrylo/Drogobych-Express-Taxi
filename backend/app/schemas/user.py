@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from app.db.models import UserRole
 
@@ -52,6 +52,16 @@ class TelegramWebAppAuth(BaseModel):
 class DevLoginRequest(BaseModel):
     telegram_id: Optional[int] = None
     role: Optional[UserRole] = None
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def parse_role(cls, v):
+        if isinstance(v, str):
+            v_lower = v.lower()
+            for r in UserRole:
+                if r.value == v_lower:
+                    return r
+        return v
 
 class AuthTokenResponse(BaseModel):
     access_token: str
